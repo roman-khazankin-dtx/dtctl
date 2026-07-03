@@ -127,8 +127,8 @@ Examples:
 		}
 
 		outputFormat, _ := cmd.Flags().GetString("output")
-		if outputFormat == "" {
-			outputFormat = "json"
+		if !cmd.Flags().Changed("output") {
+			outputFormat = "collapsed"
 		}
 		if outputFormat == "stacktree" {
 			w, _, err := term.GetSize(int(os.Stdout.Fd()))
@@ -162,6 +162,14 @@ Examples:
 			}
 			top, _ := cmd.Flags().GetInt("top")
 			if s := profile.ToBars(apiKind, result, w, top); s != "" {
+				fmt.Print(s)
+				return nil
+			}
+			outputFormat = "json"
+		}
+		if outputFormat == "collapsed" {
+			top, _ := cmd.Flags().GetInt("top")
+			if s := profile.ToCollapsed(apiKind, result, top); s != "" {
 				fmt.Print(s)
 				return nil
 			}
