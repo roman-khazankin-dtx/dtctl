@@ -125,7 +125,6 @@ Examples:
 		if !full {
 			result = compactResult(result)
 		}
-		result = profile.EnrichResult(apiKind, result)
 
 		outputFormat, _ := cmd.Flags().GetString("output")
 		if outputFormat == "" {
