@@ -20,7 +20,8 @@ Available operations:
   analyzer (az)           Run a Davis AI analyzer
   slo                     Evaluate a service-level objective
   copilot (cp, chat)      Chat with Davis CoPilot interactively
-  preview-processor       Preview an OpenPipeline processor against sample records`,
+  preview-processor       Preview an OpenPipeline processor against sample records
+  profile                 Run a code-level profiling analysis (hotspots, threads, memory)`,
 	Example: `  # Execute a workflow and wait for completion
   dtctl exec workflow <workflow-id>
 
@@ -52,4 +53,5 @@ func init() {
 	execCmd.AddCommand(execSLOCmd)
 	execCmd.AddCommand(execPreviewProcessorCmd)
 	execCmd.AddCommand(execAPICmd)
+	execCmd.AddCommand(execProfileCmd)
 }
