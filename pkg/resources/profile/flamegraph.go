@@ -199,5 +199,5 @@ func fgLabel(n map[string]interface{}) string {
 	if cn == "" || mn == "" {
 		return ""
 	}
-	return cn + "." + mn + "()"
+	return cn + "." + mn
 }

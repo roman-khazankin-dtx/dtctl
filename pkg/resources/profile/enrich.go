@@ -141,9 +141,9 @@ func nodeLabel(n map[string]interface{}) string {
 		return ""
 	}
 	if cp != "" {
-		return cp + "." + cn + "." + mn + "()"
+		return cp + "." + cn + "." + mn
 	}
-	return cn + "." + mn + "()"
+	return cn + "." + mn
 }
 
 func nodeClass(n map[string]interface{}) string {
@@ -157,7 +157,7 @@ func nodeClass(n map[string]interface{}) string {
 
 func nodeMethod(n map[string]interface{}) string {
 	mn, _ := n["methodName"].(string)
-	return mn + "()"
+	return mn
 }
 
 func nodeSamples(n map[string]interface{}) map[string]int {

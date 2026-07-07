@@ -27,6 +27,23 @@ Kinds:
   memory          Memory allocation analysis for a PROCESS_GROUP or PGI entity
   memory-details  Drill-down into a specific type/method (requires --type and --method)
 
+Output formats (--output/-o; default is "collapsed"):
+  collapsed   Brendan Gregg collapsed/folded stacks, grouped by thread state.
+              One stack per line: frame1;frame2;...;frameN followed by
+              per-state sample counts. Example:
+                java.lang.Thread.run;...;com.example.Foo.bar running=16 lock=0 net_io=0 disk_io=0 wait=0
+              States: running, lock, net_io, disk_io, wait.
+  flamegraph  Rendered flame graph of the same stacks.
+  stacktree   Indented call tree (respects --depth, --app-only, --abbrev).
+  tree        Compact call tree.
+  bars        Top frames as a horizontal bar chart (respects --top).
+  table       Flat table of frames (respects --top).
+  json        Structured node tree (dataNodes with id/childIds/samples) —
+              best for programmatic analysis.
+  Note: collapsed, flamegraph, stacktree, tree, and bars apply to CPU kinds
+  (hotspots/threads) only. For memory / memory-details use table or json;
+  the stack renderings fall back to json automatically.
+
 Examples:
   # Method hotspots for the last hour
   dtctl exec profile --kind hotspots --entity SERVICE-ABC123 --last 1h
@@ -40,6 +57,11 @@ Examples:
   # Memory drill-down
   dtctl exec profile --kind memory-details --entity PROCESS_GROUP-DEF456 --last 1h \
     --type java.lang.String --method "java.lang.String.intern()"
+
+  # Same hotspots, different renderings
+  dtctl exec profile --kind hotspots --entity SERVICE-ABC123 --last 15m               # collapsed (default)
+  dtctl exec profile --kind hotspots --entity SERVICE-ABC123 --last 15m -o json       # structured tree
+  dtctl exec profile --kind hotspots --entity SERVICE-ABC123 --last 15m -o flamegraph
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		kindShort, _ := cmd.Flags().GetString("kind")
