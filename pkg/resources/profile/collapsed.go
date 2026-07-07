@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-var sampleKeys = []string{"RUNNING", "LOCK", "NET_IO", "DISK_IO", "WAIT"}
-
 // ToCollapsed renders the Brendan Gregg collapsed stack format grouped by thread state.
 // Each section is sorted by that state's count descending; top > 0 limits each section to N entries.
 // Returns empty string for unsupported kinds or missing data.
@@ -83,38 +81,28 @@ func ToCollapsed(kind string, raw interface{}, top int) string {
 		return ""
 	}
 
+	stateKeys := []string{"RUNNING", "LOCK", "NET_IO", "DISK_IO", "WAIT"}
+
 	var sb strings.Builder
-
-	if top == 0 {
-		sort.SliceStable(all, func(i, j int) bool {
-			return all[i].samples["RUNNING"] > all[j].samples["RUNNING"]
-		})
-		for _, l := range all {
-			fmt.Fprintf(&sb, "%s running=%d lock=%d net_io=%d disk_io=%d wait=%d\n",
-				l.path,
-				l.samples["RUNNING"],
-				l.samples["LOCK"],
-				l.samples["NET_IO"],
-				l.samples["DISK_IO"],
-				l.samples["WAIT"],
-			)
+	for i, key := range stateKeys {
+		if i > 0 {
+			sb.WriteByte('\n')
 		}
-		return sb.String()
-	}
-
-	for _, key := range sampleKeys {
 		sorted := make([]line, len(all))
 		copy(sorted, all)
 		sort.SliceStable(sorted, func(i, j int) bool {
 			return sorted[i].samples[key] > sorted[j].samples[key]
 		})
 		if sorted[0].samples[key] == 0 {
+			fmt.Fprintf(&sb, "# %s — no activity\n", key)
 			continue
 		}
+		if top > 0 && len(sorted) > top {
+			sorted = sorted[:top]
+		}
 		fmt.Fprintf(&sb, "# %s\n", key)
-		kept := 0
 		for _, l := range sorted {
-			if l.samples[key] == 0 || kept >= top {
+			if l.samples[key] == 0 {
 				break
 			}
 			fmt.Fprintf(&sb, "%s running=%d lock=%d net_io=%d disk_io=%d wait=%d\n",
@@ -125,7 +113,6 @@ func ToCollapsed(kind string, raw interface{}, top int) string {
 				l.samples["DISK_IO"],
 				l.samples["WAIT"],
 			)
-			kept++
 		}
 	}
 	return sb.String()
