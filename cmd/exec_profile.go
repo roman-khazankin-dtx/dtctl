@@ -31,6 +31,8 @@ Kinds:
 
 Examples:
   dtctl exec profile -k hotspots -e SERVICE-ABC123 --last 1h
+  dtctl exec profile -k hotspots -e SERVICE-ABC123 --last 1h --app-only
+  dtctl exec profile -k hotspots -e SERVICE-ABC123 --last 1h --app-only --top 5
   dtctl exec profile -k threads -e SERVICE-ABC123 --last 30min
   dtctl exec profile -k memory -e PROCESS_GROUP-DEF456 --last 1h --survivors-only
   dtctl exec profile -k memory-details -e PROCESS_GROUP-DEF456 --last 1h \
