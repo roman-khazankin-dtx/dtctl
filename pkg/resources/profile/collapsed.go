@@ -8,8 +8,9 @@ import (
 
 // ToCollapsed renders the Brendan Gregg collapsed stack format grouped by thread state.
 // Each section is sorted by that state's count descending; top > 0 limits each section to N entries.
+// appOnly strips non-com.dynatrace frames from each path.
 // Returns empty string for unsupported kinds or missing data.
-func ToCollapsed(kind string, raw interface{}, top int) string {
+func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 	if kind != "methodHotspots" && kind != "threadAnalysis" {
 		return ""
 	}
@@ -65,7 +66,7 @@ func ToCollapsed(kind string, raw interface{}, top int) string {
 			return
 		}
 		path := stack
-		if n.label != "" {
+		if n.label != "" && (!appOnly || strings.HasPrefix(n.label, appPrefix)) {
 			path = append(stack, n.label)
 		}
 		if len(n.children) == 0 && len(path) > 0 {

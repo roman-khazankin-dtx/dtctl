@@ -119,8 +119,14 @@ Examples:
 		_ = json.Unmarshal(b, &result)
 		result = compactResult(result)
 
+		outputFmt, _ := cmd.Flags().GetString("output")
+		if outputFmt == "json" {
+			return output.NewPrinter("json").Print(result)
+		}
+
+		appOnly, _ := cmd.Flags().GetBool("app-only")
 		top, _ := cmd.Flags().GetInt("top")
-		if s := profile.ToCollapsed(apiKind, result, top); s != "" {
+		if s := profile.ToCollapsed(apiKind, result, top, appOnly); s != "" {
 			fmt.Print(s)
 			return nil
 		}
@@ -162,6 +168,8 @@ func init() {
 	execProfileCmd.Flags().String("method", "", "method to drill into (memory-details)")
 
 	execProfileCmd.Flags().Int("top", 0, "limit output to top N rows by running samples (0 = all)")
+	execProfileCmd.Flags().StringP("output", "o", "", "output format: json")
+	execProfileCmd.Flags().Bool("app-only", false, "show only application frames (com.dynatrace.*), stripping framework noise")
 
 	_ = execProfileCmd.MarkFlagRequired("kind")
 	_ = execProfileCmd.MarkFlagRequired("entity")
