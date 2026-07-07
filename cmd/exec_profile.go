@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/profile"
@@ -80,6 +80,7 @@ Examples:
 
 		var from, to int64
 		if lastStr != "" {
+			lastStr = strings.ReplaceAll(lastStr, "min", "m")
 			last, err := time.ParseDuration(lastStr)
 			if err != nil {
 				return fmt.Errorf("invalid --last value %q: %w", lastStr, err)
@@ -143,79 +144,14 @@ Examples:
 		b, _ := json.Marshal(resp)
 		var result interface{}
 		_ = json.Unmarshal(b, &result)
-		full, _ := cmd.Flags().GetBool("full")
-		if !full {
-			result = compactResult(result)
-		}
+		result = compactResult(result)
 
-		outputFormat, _ := cmd.Flags().GetString("output")
-		if !cmd.Flags().Changed("output") {
-			outputFormat = "collapsed"
+		top, _ := cmd.Flags().GetInt("top")
+		if s := profile.ToCollapsed(apiKind, result, top); s != "" {
+			fmt.Print(s)
+			return nil
 		}
-		if outputFormat == "stacktree" {
-			w, _, err := term.GetSize(int(os.Stdout.Fd()))
-			if err != nil || w <= 0 {
-				w = 120
-			}
-			depth, _ := cmd.Flags().GetInt("depth")
-			appOnly, _ := cmd.Flags().GetBool("app-only")
-			abbrev, _ := cmd.Flags().GetBool("abbrev")
-			if s := profile.ToStackTree(apiKind, result, w, depth, appOnly, abbrev); s != "" {
-				fmt.Print(s)
-				return nil
-			}
-			outputFormat = "json"
-		}
-		if outputFormat == "tree" {
-			w, _, err := term.GetSize(int(os.Stdout.Fd()))
-			if err != nil || w <= 0 {
-				w = 120
-			}
-			if s := profile.ToTree(apiKind, result, w); s != "" {
-				fmt.Print(s)
-				return nil
-			}
-			outputFormat = "json"
-		}
-		if outputFormat == "bars" {
-			w, _, err := term.GetSize(int(os.Stdout.Fd()))
-			if err != nil || w <= 0 {
-				w = 120
-			}
-			top, _ := cmd.Flags().GetInt("top")
-			if s := profile.ToBars(apiKind, result, w, top); s != "" {
-				fmt.Print(s)
-				return nil
-			}
-			outputFormat = "json"
-		}
-		if outputFormat == "collapsed" {
-			top, _ := cmd.Flags().GetInt("top")
-			if s := profile.ToCollapsed(apiKind, result, top); s != "" {
-				fmt.Print(s)
-				return nil
-			}
-			outputFormat = "json"
-		}
-		if outputFormat == "flamegraph" {
-			w, _, err := term.GetSize(int(os.Stdout.Fd()))
-			if err != nil || w <= 0 {
-				w = 120
-			}
-			if fg := profile.ToFlamegraph(apiKind, result, w); fg != "" {
-				fmt.Print(fg)
-				return nil
-			}
-			outputFormat = "json"
-		}
-		if outputFormat == "table" {
-			if rows := profile.ToTableRows(apiKind, result); rows != nil {
-				top, _ := cmd.Flags().GetInt("top")
-				return output.NewPrinter("table").PrintList(profile.LimitRows(rows, top))
-			}
-			outputFormat = "json"
-		}
-		return output.NewPrinter(outputFormat).Print(result)
+		return output.NewPrinter("json").Print(result)
 	},
 }
 
@@ -252,11 +188,7 @@ func init() {
 	execProfileCmd.Flags().String("type", "", "allocated type to drill into (memory-details)")
 	execProfileCmd.Flags().String("method", "", "method to drill into (memory-details)")
 
-	execProfileCmd.Flags().Bool("full", false, "include raw timeseries dataPoints (stripped by default)")
-	execProfileCmd.Flags().Int("top", 0, "limit table output to top N rows by running samples (0 = all)")
-	execProfileCmd.Flags().Int("depth", 0, "limit stacktree output to N levels deep (0 = all)")
-	execProfileCmd.Flags().Bool("app-only", false, "stacktree: show only com.dynatrace.* frames")
-	execProfileCmd.Flags().Bool("abbrev", false, "stacktree: abbreviate package segments to first letter (e.g. com.example → c.e)")
+	execProfileCmd.Flags().Int("top", 0, "limit output to top N rows by running samples (0 = all)")
 
 	_ = execProfileCmd.MarkFlagRequired("kind")
 	_ = execProfileCmd.MarkFlagRequired("entity")
