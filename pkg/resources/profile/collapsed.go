@@ -81,9 +81,22 @@ func ToCollapsed(kind string, raw interface{}, top int) string {
 		return ""
 	}
 
-	stateKeys := []string{"RUNNING", "LOCK", "NET_IO", "DISK_IO", "WAIT"}
-
 	var sb strings.Builder
+
+	if top == 0 {
+		sort.SliceStable(all, func(i, j int) bool {
+			return all[i].samples["RUNNING"] > all[j].samples["RUNNING"]
+		})
+		for _, l := range all {
+			fmt.Fprintf(&sb, "%s running=%d lock=%d net_io=%d disk_io=%d wait=%d\n",
+				l.path, l.samples["RUNNING"], l.samples["LOCK"],
+				l.samples["NET_IO"], l.samples["DISK_IO"], l.samples["WAIT"],
+			)
+		}
+		return sb.String()
+	}
+
+	stateKeys := []string{"RUNNING", "LOCK", "NET_IO", "DISK_IO", "WAIT"}
 	for i, key := range stateKeys {
 		if i > 0 {
 			sb.WriteByte('\n')
@@ -97,7 +110,7 @@ func ToCollapsed(kind string, raw interface{}, top int) string {
 			fmt.Fprintf(&sb, "# %s — no activity\n", key)
 			continue
 		}
-		if top > 0 && len(sorted) > top {
+		if len(sorted) > top {
 			sorted = sorted[:top]
 		}
 		fmt.Fprintf(&sb, "# %s\n", key)
@@ -106,12 +119,8 @@ func ToCollapsed(kind string, raw interface{}, top int) string {
 				break
 			}
 			fmt.Fprintf(&sb, "%s running=%d lock=%d net_io=%d disk_io=%d wait=%d\n",
-				l.path,
-				l.samples["RUNNING"],
-				l.samples["LOCK"],
-				l.samples["NET_IO"],
-				l.samples["DISK_IO"],
-				l.samples["WAIT"],
+				l.path, l.samples["RUNNING"], l.samples["LOCK"],
+				l.samples["NET_IO"], l.samples["DISK_IO"], l.samples["WAIT"],
 			)
 		}
 	}
