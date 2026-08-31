@@ -18,7 +18,7 @@ dtctl query "fetch logs | limit 10"           # Run DQL queries
 dtctl apply -f workflow.yaml --set env=prod   # Declarative configuration
 dtctl get dashboards -o json                  # Structured output for automation
 dtctl exec copilot nl2dql "error logs from last hour"
-dtctl exec profile --kind hotspots --entity SERVICE-ABC123 --last 1h  # Code-level profiling
+dtctl exec profile --kind hotspots --entity PROCESS_GROUP_INSTANCE-ABC123 --last 1h  # Code-level profiling
 ```
 
 ![dtctl dashboard workflow demo](docs/assets/dtctl-1.gif)

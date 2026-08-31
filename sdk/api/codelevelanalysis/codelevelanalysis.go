@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
@@ -25,11 +26,65 @@ var Kind = map[string]string{
 	"memory-details": "memoryAllocationDetails",
 }
 
+// Leaf-type filter values (hotspots/threads). The code-level analysis API
+// splits every CPU sample by whether the thread was inside a traced service
+// context (SERVICE) or not (background, historically called "ambient"). The two
+// counters are DISJOINT partitions of one CPU budget — the clean total is
+// background + service, so omitting the filter never double-counts.
+//
+// The selection rides inside the servicefilter string using the API's internal
+// control-char encoding: "<ordinal>\x11<value>", where \x11 (DC1) separates the
+// AMBIENT_LEAF_TYPE control (ordinal 42) from its value — AMBIENT(background)=0,
+// SERVICE=1. Omitting servicefilter entirely selects BOTH (the clean total).
+const (
+	LeafTypeTotal      = "total"      // omit the filter -> background + service (clean total)
+	LeafTypeService    = "service"    // only samples taken while in a traced service context
+	LeafTypeBackground = "background" // only samples taken outside any service context
+)
+
+const (
+	ambientLeafTypeOrdinal = "42"   // AMBIENT_LEAF_TYPE enum ordinal
+	leafTypeControlSep      = "\x11" // DC1: separates a filter ordinal from its value
+)
+
+// encodeLeafType renders a leaf-type selection into the servicefilter wire
+// value. An empty selection (or "total") returns "" so the caller omits the
+// param and gets the clean background+service total. The returned string is
+// left un-escaped; url.Values.Encode escapes the \x11 as %11 on the wire.
+func encodeLeafType(leafType string) (string, error) {
+	switch leafType {
+	case "", LeafTypeTotal:
+		return "", nil
+	case LeafTypeBackground, "ambient":
+		return ambientLeafTypeOrdinal + leafTypeControlSep + "0", nil
+	case LeafTypeService:
+		return ambientLeafTypeOrdinal + leafTypeControlSep + "1", nil
+	default:
+		return "", fmt.Errorf("codelevelanalysis: unknown leaf type %q: use total, service, or background", leafType)
+	}
+}
+
+// isProcessGroupEntity reports whether id is a PROCESS_GROUP or
+// PROCESS_GROUP_INSTANCE entity — the only entity types the code-level analysis
+// API accepts. Services are NOT eligible.
+func isProcessGroupEntity(id string) bool {
+	return strings.HasPrefix(id, "PROCESS_GROUP-") ||
+		strings.HasPrefix(id, "PROCESS_GROUP_INSTANCE-")
+}
+
 type Payload struct {
 	Kind            string `json:"kind"`
 	EntityID        string `json:"entityId"`
 	From            int64  `json:"from"`
 	To              int64  `json:"to"`
+	// LeafType selects which CPU samples to attribute (hotspots/threads):
+	// "total" (default), "service", or "background". It is the friendly form of
+	// ServiceFilter and, when set to a non-total value, populates the
+	// servicefilter param via the control-char encoding. See LeafType* consts.
+	LeafType string `json:"leafType,omitempty"`
+	// ServiceFilter is the raw servicefilter wire value — an escape hatch for
+	// SDK callers who already hold an encoded filter. LeafType takes precedence
+	// when both are set.
 	ServiceFilter   string `json:"serviceFilter,omitempty"`
 	ShowWaiting     bool   `json:"showWaiting,omitempty"`
 	ProblemID       string `json:"problemId,omitempty"`
@@ -143,6 +198,12 @@ func validate(p Payload) error {
 	if p.EntityID == "" {
 		return fmt.Errorf("codelevelanalysis: entityId is required")
 	}
+	if !isProcessGroupEntity(p.EntityID) {
+		return fmt.Errorf("codelevelanalysis: entityId must be a PROCESS_GROUP or PROCESS_GROUP_INSTANCE — services are not eligible; got %q", p.EntityID)
+	}
+	if _, err := encodeLeafType(p.LeafType); err != nil {
+		return err
+	}
 	if p.From == 0 || p.To == 0 || p.To <= p.From {
 		return fmt.Errorf("codelevelanalysis: from/to must be epoch-millis with to > from")
 	}
@@ -174,7 +235,14 @@ func buildSubmitPath(p Payload) string {
 
 	switch p.Kind {
 	case "methodHotspots", "threadAnalysis":
-		setIfSet("servicefilter", p.ServiceFilter)
+		// LeafType wins when set; otherwise fall back to a raw ServiceFilter.
+		// Both encoders were already validated in validate(), so the error here
+		// is impossible — ignore it to keep this path total.
+		serviceFilter := p.ServiceFilter
+		if encoded, _ := encodeLeafType(p.LeafType); encoded != "" {
+			serviceFilter = encoded
+		}
+		setIfSet("servicefilter", serviceFilter)
 		setIfTrue("showWaiting", p.ShowWaiting)
 		path := "methodhotspots"
 		if p.Kind == "threadAnalysis" {

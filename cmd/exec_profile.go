@@ -23,17 +23,26 @@ The analysis is asynchronous server-side; this command polls until it completes.
 Output is Brendan Gregg collapsed/folded stacks grouped by thread state:
   frame1;frame2;...;frameN running=16 lock=0 net_io=0 disk_io=0 wait=0
 
+Entities: only PROCESS_GROUP and PROCESS_GROUP_INSTANCE are eligible — services
+are not accepted by the code-level analysis API.
+
 Kinds:
-  hotspots        Method hotspots for a SERVICE entity
-  threads         Thread analysis for a SERVICE entity
-  memory          Memory allocation analysis for a PROCESS_GROUP or PGI entity
+  hotspots        Method hotspots for a PROCESS_GROUP or PROCESS_GROUP_INSTANCE
+  threads         Thread analysis for a PROCESS_GROUP or PROCESS_GROUP_INSTANCE
+  memory          Memory allocation analysis for a PROCESS_GROUP or PGI
   memory-details  Drill-down into a specific type/method (requires --type and --method)
 
+Leaf-type filter (hotspots/threads) — it is up to you whether to narrow the view:
+  --leaf-type total       (default) clean total: background + service CPU samples
+  --leaf-type service     only samples taken while the thread was in a traced service context
+  --leaf-type background  only samples taken outside any service context (a.k.a. ambient)
+
 Examples:
-  dtctl exec profile -k hotspots -e SERVICE-ABC123 --last 1h
-  dtctl exec profile -k hotspots -e SERVICE-ABC123 --last 1h --app-only
-  dtctl exec profile -k hotspots -e SERVICE-ABC123 --last 1h --app-only --top 5
-  dtctl exec profile -k threads -e SERVICE-ABC123 --last 30min
+  dtctl exec profile -k hotspots -e PROCESS_GROUP_INSTANCE-ABC123 --last 1h
+  dtctl exec profile -k hotspots -e PROCESS_GROUP_INSTANCE-ABC123 --last 1h --app-only
+  dtctl exec profile -k hotspots -e PROCESS_GROUP-ABC123 --last 1h --leaf-type background
+  dtctl exec profile -k hotspots -e PROCESS_GROUP-ABC123 --last 1h --leaf-type service --top 5
+  dtctl exec profile -k threads -e PROCESS_GROUP_INSTANCE-ABC123 --last 30min
   dtctl exec profile -k memory -e PROCESS_GROUP-DEF456 --last 1h --survivors-only
   dtctl exec profile -k memory-details -e PROCESS_GROUP-DEF456 --last 1h \
     --type java.lang.String --method "java.lang.String.intern()"
@@ -77,7 +86,7 @@ Examples:
 			}
 		}
 
-		serviceFilter, _ := cmd.Flags().GetString("service-filter")
+		leafType, _ := cmd.Flags().GetString("leaf-type")
 		showWaiting, _ := cmd.Flags().GetBool("show-waiting")
 		problemID, _ := cmd.Flags().GetString("problem-id")
 		survivorsOnly, _ := cmd.Flags().GetBool("survivors-only")
@@ -99,7 +108,7 @@ Examples:
 			EntityID:        entityID,
 			From:            from,
 			To:              to,
-			ServiceFilter:   serviceFilter,
+			LeafType:        leafType,
 			ShowWaiting:     showWaiting,
 			ProblemID:       problemID,
 			SurvivorsOnly:   survivorsOnly,
@@ -149,13 +158,13 @@ func parseProfileTimestamp(s string) (int64, error) {
 
 func init() {
 	execProfileCmd.Flags().StringP("kind", "k", "", "analysis kind: hotspots, threads, memory, memory-details (required)")
-	execProfileCmd.Flags().StringP("entity", "e", "", "entity ID (SERVICE-xxx or PROCESS_GROUP-xxx) (required)")
+	execProfileCmd.Flags().StringP("entity", "e", "", "entity ID — PROCESS_GROUP-xxx or PROCESS_GROUP_INSTANCE-xxx (services not eligible) (required)")
 	execProfileCmd.Flags().String("last", "", "time window relative to now, e.g. 1h, 30m (max 2h)")
 	execProfileCmd.Flags().String("from", "", "window start — RFC3339 or epoch millis")
 	execProfileCmd.Flags().String("to", "", "window end — RFC3339 or epoch millis")
 
 	// hotspots / threads only
-	execProfileCmd.Flags().String("service-filter", "", "service call filter (hotspots/threads)")
+	execProfileCmd.Flags().String("leaf-type", "total", "CPU sample scope (hotspots/threads): total, service, or background")
 	execProfileCmd.Flags().Bool("show-waiting", false, "include waiting (non-running) samples (hotspots/threads)")
 
 	// memory* only
