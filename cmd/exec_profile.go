@@ -34,7 +34,12 @@ Kinds:
 
 memory/memory-details show where allocations happen and what survived GC within the
 window — allocation pressure, not live retained heap. They don't prove a leak or
-predict OOM; confirm that with a heap/RSS trend and pod restart/OOM state.
+predict OOM; confirm that with a heap/RSS trend and pod restart/OOM state. The best
+leak tell is survived/allocated: a frame whose survivors far exceed its in-window
+allocations is retaining, not churning — that ratio, not raw allocation size, finds
+the leak (the biggest allocator is usually just churn). NOTE the memory tree is
+INVERTED vs hotspots: the allocation-site method is at the ROOT and its callers hang
+below as children (the folded output already handles this; mind it if you parse JSON).
 
 Samples are aggregated across the whole window (max 24h). Bound it with --from/--to
 for a clean read.

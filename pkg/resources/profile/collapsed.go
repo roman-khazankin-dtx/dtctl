@@ -141,6 +141,11 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 // It walks the flat call tree in analysisResult.stacktreeNodes (nodes keyed by id,
 // linked via childIds, rooted at stacktreeRootIds). Note: analysisResult also carries
 // an aggregated apiStacktreeNodes with no children — do NOT use that one.
+//
+// Orientation gotcha: this tree is INVERTED relative to the hotspots tree — the
+// allocation-site method is the ROOT and its callers are the descendants. So the
+// emitted path reads allocation-site-first (site;caller;...;outermost), and per-method
+// totals live on the roots, not the leaves. Aggregating by leaf here gives Thread.run.
 // alloc/surv are allocation pressure and GC-survivors within the window, not live
 // retained heap. appOnly keeps only com.dynatrace.* frames in each path; top limits rows.
 func memoryCollapsed(raw interface{}, top int, appOnly bool) string {
