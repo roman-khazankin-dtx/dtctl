@@ -32,10 +32,20 @@ Kinds:
   memory          Memory allocation analysis for a PROCESS_GROUP or PGI
   memory-details  Drill-down into a specific type/method (requires --type and --method)
 
-Leaf-type filter (hotspots/threads) — it is up to you whether to narrow the view:
-  --leaf-type total       (default) clean total: background + service CPU samples
-  --leaf-type service     only samples taken while the thread was in a traced service context
-  --leaf-type background  only samples taken outside any service context (a.k.a. ambient)
+memory/memory-details show where allocations happen and what survived GC within the
+window — allocation pressure, not live retained heap. They don't prove a leak or
+predict OOM; confirm that with a heap/RSS trend and pod restart/OOM state.
+
+Samples are aggregated across the whole window (max 24h). Bound it with --from/--to
+for a clean read.
+
+Leaf-type filter (hotspots/threads) — pick by what you're chasing:
+  --leaf-type service     samples taken inside a traced service/request context;
+                          the one to reach for when localizing why a specific
+                          endpoint or call path is hot (drops agent + ambient noise).
+  --leaf-type background  ambient work outside any request (GC, JIT, schedulers, pools).
+  --leaf-type total       (default) everything, including agent/framework overhead;
+                          broadest view, but frame shares are diluted by non-app samples.
 
 Examples:
   dtctl exec profile -k hotspots -e PROCESS_GROUP_INSTANCE-ABC123 --last 1h
@@ -159,7 +169,7 @@ func parseProfileTimestamp(s string) (int64, error) {
 func init() {
 	execProfileCmd.Flags().StringP("kind", "k", "", "analysis kind: hotspots, threads, memory, memory-details (required)")
 	execProfileCmd.Flags().StringP("entity", "e", "", "entity ID — PROCESS_GROUP-xxx or PROCESS_GROUP_INSTANCE-xxx (services not eligible) (required)")
-	execProfileCmd.Flags().String("last", "", "time window relative to now, e.g. 1h, 30m (max 2h)")
+	execProfileCmd.Flags().String("last", "", "time window relative to now, e.g. 1h, 30m (max 24h)")
 	execProfileCmd.Flags().String("from", "", "window start — RFC3339 or epoch millis")
 	execProfileCmd.Flags().String("to", "", "window end — RFC3339 or epoch millis")
 
