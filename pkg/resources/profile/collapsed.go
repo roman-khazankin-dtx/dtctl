@@ -8,7 +8,8 @@ import (
 
 // ToCollapsed renders the Brendan Gregg collapsed stack format grouped by thread state.
 // Each section is sorted by that state's count descending; top > 0 limits each section to N entries.
-// appOnly strips non-com.dynatrace frames from each path.
+// appOnly strips frames the profiler did not classify as application code
+// (apiInfo.systemApi) from each path — see nodeIsApp.
 // Returns empty string for unsupported kinds or missing data.
 func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 	switch kind {
@@ -33,6 +34,7 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 
 	type node struct {
 		label    string
+		isApp    bool
 		samples  map[string]int
 		children []string
 	}
@@ -46,6 +48,7 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 		id := nodeIDStr(nm["id"])
 		nd := &node{
 			label:   nodeLabel(nm),
+			isApp:   nodeIsApp(nm),
 			samples: nodeSamples(nm),
 		}
 		if cids, ok := nm["childIds"].([]interface{}); ok {
@@ -71,7 +74,7 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 			return
 		}
 		path := stack
-		if n.label != "" && (!appOnly || strings.HasPrefix(n.label, appPrefix)) {
+		if n.label != "" && (!appOnly || n.isApp) {
 			path = append(stack, n.label)
 		}
 		if len(n.children) == 0 && len(path) > 0 {
@@ -147,7 +150,8 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 // emitted path reads allocation-site-first (site;caller;...;outermost), and per-method
 // totals live on the roots, not the leaves. Aggregating by leaf here gives Thread.run.
 // alloc/surv are allocation pressure and GC-survivors within the window, not live
-// retained heap. appOnly keeps only com.dynatrace.* frames in each path; top limits rows.
+// retained heap. appOnly keeps only profiler-classified application frames
+// (apiInfo.systemApi; see nodeIsApp) in each path; top limits rows.
 func memoryCollapsed(raw interface{}, top int, appOnly bool) string {
 	envelope, ok := raw.(map[string]interface{})
 	if !ok {
@@ -166,6 +170,7 @@ func memoryCollapsed(raw interface{}, top int, appOnly bool) string {
 
 	type mnode struct {
 		name     string
+		isApp    bool
 		ai       map[string]interface{}
 		children []string
 	}
@@ -175,7 +180,7 @@ func memoryCollapsed(raw interface{}, top int, appOnly bool) string {
 		if !ok {
 			continue
 		}
-		md := &mnode{name: strVal(nm, "name")}
+		md := &mnode{name: strVal(nm, "name"), isApp: nodeIsApp(nm)}
 		md.ai, _ = nm["allocationInfo"].(map[string]interface{})
 		if cids, ok := nm["childIds"].([]interface{}); ok {
 			for _, c := range cids {
@@ -199,7 +204,7 @@ func memoryCollapsed(raw interface{}, top int, appOnly bool) string {
 			return
 		}
 		path := stack
-		if n.name != "" && (!appOnly || strings.HasPrefix(n.name, appPrefix)) {
+		if n.name != "" && (!appOnly || n.isApp) {
 			path = append(stack, n.name)
 		}
 		if len(n.children) == 0 {

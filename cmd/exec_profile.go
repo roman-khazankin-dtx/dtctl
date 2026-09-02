@@ -195,7 +195,7 @@ func init() {
 
 	execProfileCmd.Flags().Int("top", 0, "limit output to top N rows by running samples (0 = all)")
 	execProfileCmd.Flags().StringP("output", "o", "", "output format: json")
-	execProfileCmd.Flags().Bool("app-only", false, "show only application frames (com.dynatrace.*), stripping framework noise")
+	execProfileCmd.Flags().Bool("app-only", false, "show only application frames (profiler-classified app code), stripping JRE/library and OneAgent noise")
 
 	_ = execProfileCmd.MarkFlagRequired("kind")
 	_ = execProfileCmd.MarkFlagRequired("entity")

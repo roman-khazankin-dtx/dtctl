@@ -8,13 +8,6 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 )
 
-// appPrefix is the only package root shown when --app-only is set.
-const appPrefix = "com.dynatrace."
-
-func isSystemFrame(label string) bool {
-	return !strings.HasPrefix(label, appPrefix)
-}
-
 // abbreviateLabel shortens each lowercase package segment to its first character,
 // leaving class names (uppercase-initial) and the method suffix intact.
 // e.g. com.dynatrace.easytravel.business.webservice.JourneyService.findJourneys()
@@ -53,6 +46,7 @@ func ToStackTree(kind string, raw interface{}, width, maxDepth int, appOnly, abb
 	type stNode struct {
 		id       string
 		label    string
+		isApp    bool
 		samples  map[string]int
 		children []*stNode
 	}
@@ -67,6 +61,7 @@ func ToStackTree(kind string, raw interface{}, width, maxDepth int, appOnly, abb
 		nodeMap[id] = &stNode{
 			id:      id,
 			label:   nodeLabel(nm),
+			isApp:   nodeIsApp(nm),
 			samples: nodeSamples(nm),
 		}
 	}
@@ -152,7 +147,7 @@ func ToStackTree(kind string, raw interface{}, width, maxDepth int, appOnly, abb
 		}
 
 		// System frame passthrough (appOnly mode).
-		if appOnly && isSystemFrame(n.label) {
+		if appOnly && !n.isApp {
 			switch len(n.children) {
 			case 1:
 				dfs(n.children[0], prefix, connector, depth)

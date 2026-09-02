@@ -133,6 +133,19 @@ func dataNodes(result map[string]interface{}) []interface{} {
 	return nodes
 }
 
+// nodeIsApp reports whether the profiler classified this frame as the application's
+// own code. The API flag is counterintuitively named: apiInfo.systemApi == true means
+// application code; false means built-in/library frames (JRE, Spring, Apache) AND the
+// Dynatrace OneAgent itself (com.dynatrace.agent.*) — exactly the noise --app-only drops.
+func nodeIsApp(n map[string]interface{}) bool {
+	ai, _ := n["apiInfo"].(map[string]interface{})
+	if ai == nil {
+		return false
+	}
+	b, _ := ai["systemApi"].(bool)
+	return b
+}
+
 func nodeLabel(n map[string]interface{}) string {
 	cp, _ := n["classPath"].(string)
 	cn, _ := n["className"].(string)
