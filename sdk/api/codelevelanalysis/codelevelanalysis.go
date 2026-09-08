@@ -64,12 +64,16 @@ func encodeLeafType(leafType string) (string, error) {
 	}
 }
 
-// isProcessGroupEntity reports whether id is a PROCESS_GROUP or
-// PROCESS_GROUP_INSTANCE entity — the only entity types the code-level analysis
-// API accepts. Services are NOT eligible.
+// isProcessGroupEntity reports whether id is a process-level entity the
+// code-level analysis API accepts: a PROCESS_GROUP, a PROCESS_GROUP_INSTANCE,
+// or a PROCESS (the 3rd-gen rename of PROCESS_GROUP_INSTANCE). The allowlist
+// exists to reject SERVICE (and other) entities, which are NOT eligible.
+// Note: "PROCESS-" does not prefix-match "PROCESS_GROUP-" (the 8th byte is
+// '_' vs '-'), so each type is matched distinctly.
 func isProcessGroupEntity(id string) bool {
 	return strings.HasPrefix(id, "PROCESS_GROUP-") ||
-		strings.HasPrefix(id, "PROCESS_GROUP_INSTANCE-")
+		strings.HasPrefix(id, "PROCESS_GROUP_INSTANCE-") ||
+		strings.HasPrefix(id, "PROCESS-")
 }
 
 type Payload struct {
@@ -199,7 +203,7 @@ func validate(p Payload) error {
 		return fmt.Errorf("codelevelanalysis: entityId is required")
 	}
 	if !isProcessGroupEntity(p.EntityID) {
-		return fmt.Errorf("codelevelanalysis: entityId must be a PROCESS_GROUP or PROCESS_GROUP_INSTANCE — services are not eligible; got %q", p.EntityID)
+		return fmt.Errorf("codelevelanalysis: entityId must be a PROCESS, PROCESS_GROUP, or PROCESS_GROUP_INSTANCE — services are not eligible; got %q", p.EntityID)
 	}
 	if _, err := encodeLeafType(p.LeafType); err != nil {
 		return err

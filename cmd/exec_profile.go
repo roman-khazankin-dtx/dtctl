@@ -12,6 +12,7 @@ import (
 
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/profile"
+	"github.com/dynatrace-oss/dtctl/pkg/safety"
 )
 
 var execProfileCmd = &cobra.Command{
@@ -23,8 +24,9 @@ The analysis is asynchronous server-side; this command polls until it completes.
 Output is Brendan Gregg collapsed/folded stacks grouped by thread state:
   frame1;frame2;...;frameN running=16 lock=0 net_io=0 disk_io=0 wait=0
 
-Entities: only PROCESS_GROUP and PROCESS_GROUP_INSTANCE are eligible — services
-are not accepted by the code-level analysis API.
+Entities: only PROCESS, PROCESS_GROUP, and PROCESS_GROUP_INSTANCE are eligible
+(PROCESS is the 3rd-gen rename of PROCESS_GROUP_INSTANCE) — services are not
+accepted by the code-level analysis API.
 
 Kinds:
   hotspots        Method hotspots for a PROCESS_GROUP or PROCESS_GROUP_INSTANCE
@@ -111,7 +113,8 @@ Examples:
 		allocType, _ := cmd.Flags().GetString("type")
 		method, _ := cmd.Flags().GetString("method")
 
-		_, c, err := SetupClient()
+		// Code-level analysis only reads profiling data — gate on OperationRead.
+		_, c, err := SetupWithSafety(safety.OperationRead)
 		if err != nil {
 			return err
 		}

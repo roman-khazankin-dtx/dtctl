@@ -106,7 +106,9 @@ var ResourceScopes = map[string]AccessScopes{
 	"sdk-version": {Read: []string{"app-engine:apps:run"}},
 
 	// Code-level analysis (/platform-reserved/codelevelanalysis/v0.1)
-	"profile": {Run: []string{"storage:entities:read"}},
+	// Needs storage:entities:read to resolve the entity and storage:profiles:read
+	// to read the profiling samples the analysis is built from.
+	"profile": {Run: []string{"storage:entities:read", "storage:profiles:read"}},
 
 	// Davis AI
 	"analyzer": {Read: []string{"davis:analyzers:read"}, Run: []string{"davis:analyzers:execute"}},
@@ -256,6 +258,7 @@ var grailExtendedReadScopes = []string{
 	"storage:user.replays:read",
 	"storage:fieldsets:read",
 	"storage:fieldset-definitions:read",
+	"storage:profiles:read", // code-level analysis (exec profile) samples
 }
 
 // scopeSet collects scopes preserving first-seen order and de-duplicating.

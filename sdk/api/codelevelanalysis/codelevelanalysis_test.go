@@ -65,6 +65,7 @@ func TestValidateEntityType(t *testing.T) {
 	}{
 		{"PROCESS_GROUP-ABC", false},
 		{"PROCESS_GROUP_INSTANCE-ABC", false},
+		{"PROCESS-ABC", false}, // 3rd-gen PGI rename
 		{"SERVICE-ABC", true},
 		{"HOST-ABC", true},
 		{"", true},
