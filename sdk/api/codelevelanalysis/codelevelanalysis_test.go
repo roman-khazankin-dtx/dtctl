@@ -80,6 +80,39 @@ func TestValidateEntityType(t *testing.T) {
 	}
 }
 
+// TestNormalizeEntityID pins the 3rd-gen PROCESS- -> classic
+// PROCESS_GROUP_INSTANCE- rewrite, and that other prefixes pass through.
+func TestNormalizeEntityID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"PROCESS-A89D22C1D0B350C4", "PROCESS_GROUP_INSTANCE-A89D22C1D0B350C4"},
+		{"PROCESS_GROUP_INSTANCE-ABC", "PROCESS_GROUP_INSTANCE-ABC"}, // already classic
+		{"PROCESS_GROUP-ABC", "PROCESS_GROUP-ABC"},                   // group, not instance
+		{"SERVICE-ABC", "SERVICE-ABC"},                              // untouched
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := normalizeEntityID(tc.in); got != tc.want {
+			t.Errorf("normalizeEntityID(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestSubmitPathRewritesProcessEntity confirms the outgoing request path carries
+// the classic PGI id, never the 3rd-gen PROCESS- id the API 404s on.
+func TestSubmitPathRewritesProcessEntity(t *testing.T) {
+	p := Payload{Kind: "methodHotspots", EntityID: "PROCESS-A89D22C1D0B350C4", From: 1, To: 2}
+	path := buildSubmitPath(p)
+	if !strings.Contains(path, "PROCESS_GROUP_INSTANCE-A89D22C1D0B350C4") {
+		t.Errorf("path %q does not carry the classic PGI id", path)
+	}
+	if strings.Contains(path, "/PROCESS-A89D22C1D0B350C4?") {
+		t.Errorf("path %q still carries the 3rd-gen PROCESS- id", path)
+	}
+}
+
 func TestValidateRejectsBadLeafType(t *testing.T) {
 	p := Payload{Kind: "methodHotspots", EntityID: "PROCESS_GROUP-ABC", From: 1, To: 2, LeafType: "nope"}
 	if err := validate(p); err == nil {
