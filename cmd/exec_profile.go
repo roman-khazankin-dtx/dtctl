@@ -25,8 +25,10 @@ Output is Brendan Gregg collapsed/folded stacks grouped by thread state:
   frame1;frame2;...;frameN running=16 lock=0 net_io=0 disk_io=0 wait=0
 
 Entities: only PROCESS, PROCESS_GROUP, and PROCESS_GROUP_INSTANCE are eligible
-(PROCESS is the 3rd-gen rename of PROCESS_GROUP_INSTANCE) — services are not
-accepted by the code-level analysis API.
+— services are not accepted by the code-level analysis API. PROCESS is the
+3rd-gen rename of PROCESS_GROUP_INSTANCE (same entity, same id suffix); pass a
+PROCESS-xxx id straight from smartscapeNodes and dtctl rewrites it to the
+classic PROCESS_GROUP_INSTANCE-xxx form the API expects.
 
 Kinds:
   hotspots        Method hotspots for a PROCESS_GROUP or PROCESS_GROUP_INSTANCE
@@ -55,6 +57,7 @@ Leaf-type filter (hotspots/threads) — pick by what you're chasing:
                           broadest view, but frame shares are diluted by non-app samples.
 
 Examples:
+  dtctl exec profile -k hotspots -e PROCESS-ABC123 --last 1h  # 3rd-gen id, rewritten to PGI
   dtctl exec profile -k hotspots -e PROCESS_GROUP_INSTANCE-ABC123 --last 1h
   dtctl exec profile -k hotspots -e PROCESS_GROUP_INSTANCE-ABC123 --last 1h --app-only
   dtctl exec profile -k hotspots -e PROCESS_GROUP-ABC123 --last 1h --leaf-type background
@@ -176,7 +179,7 @@ func parseProfileTimestamp(s string) (int64, error) {
 
 func init() {
 	execProfileCmd.Flags().StringP("kind", "k", "", "analysis kind: hotspots, threads, memory, memory-details (required)")
-	execProfileCmd.Flags().StringP("entity", "e", "", "entity ID — PROCESS_GROUP-xxx or PROCESS_GROUP_INSTANCE-xxx (services not eligible) (required)")
+	execProfileCmd.Flags().StringP("entity", "e", "", "entity ID — PROCESS-xxx, PROCESS_GROUP-xxx, or PROCESS_GROUP_INSTANCE-xxx (services not eligible) (required)")
 	execProfileCmd.Flags().String("last", "", "time window relative to now, e.g. 1h, 30m (max 24h)")
 	execProfileCmd.Flags().String("from", "", "window start — RFC3339 or epoch millis")
 	execProfileCmd.Flags().String("to", "", "window end — RFC3339 or epoch millis")
