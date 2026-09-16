@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 
 	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
 )
@@ -16,6 +19,9 @@ const (
 	pollInterval    = 1500 * time.Millisecond
 	maxPollAttempts = 40
 	maxPollErrors   = 40
+	// noServerID is the sentinel for "no node preference" — used when the
+	// response omits the serverId header.
+	noServerID = -1
 )
 
 // Kind maps user-facing shorthand to the API kind strings.
@@ -163,11 +169,30 @@ func (h *Handler) Run(ctx context.Context, p Payload) (*Response, error) {
 	if err := json.Unmarshal(resp.Body(), &pt); err != nil || pt.Token == "" {
 		return nil, fmt.Errorf("codelevelanalysis: submit returned 202 without a progress token")
 	}
-	return h.poll(ctx, p, pt.Token)
+	// The submit lands on one cluster node, which owns the async task; the
+	// serverId header names that node so polls can be routed back to it.
+	return h.poll(ctx, p, pt.Token, readServerID(resp))
 }
 
-func (h *Handler) poll(ctx context.Context, p Payload, token string) (*Response, error) {
-	resultPath := fmt.Sprintf("%s/result?token=%s", basePath, url.QueryEscape(token))
+// readServerID extracts the responsible cluster node from a response's serverId
+// header. http.Header.Get is case-insensitive, so any header casing matches.
+// Returns noServerID when the header is absent or unparseable.
+func readServerID(resp *resty.Response) int {
+	v := strings.TrimSpace(resp.Header().Get("serverId"))
+	if v == "" {
+		return noServerID
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return noServerID
+	}
+	return n
+}
+
+func (h *Handler) poll(ctx context.Context, p Payload, token string, serverID int) (*Response, error) {
+	// serverId is fixed for the whole call: the node chosen at submit owns the
+	// async task, so every poll must be routed back to it.
+	resultPath := fmt.Sprintf("%s/result?token=%s&serverId=%d", basePath, url.QueryEscape(token), serverID)
 	errCount := 0
 
 	for attempt := 1; attempt <= maxPollAttempts; attempt++ {
@@ -201,7 +226,8 @@ func (h *Handler) poll(ctx context.Context, p Payload, token string) (*Response,
 		if sc == 200 {
 			return parseResult(p, attempt, resp.Body())
 		}
-		// 202: still running
+		// 202: still running. serverId is fixed for the lifetime of the call —
+		// the node chosen at submit owns the task — so we keep polling the same one.
 	}
 
 	return nil, fmt.Errorf("codelevelanalysis: analysis did not complete within %ds (token %s)",
@@ -229,8 +255,8 @@ func validate(p Payload) error {
 	if p.From == 0 || p.To == 0 || p.To <= p.From {
 		return fmt.Errorf("codelevelanalysis: from/to must be epoch-millis with to > from")
 	}
-	if p.To-p.From > 2*60*60*1000 {
-		return fmt.Errorf("codelevelanalysis: timeframe must not exceed 2 hours")
+	if p.To-p.From > 24*60*60*1000 {
+		return fmt.Errorf("codelevelanalysis: timeframe must not exceed 24 hours")
 	}
 	if p.Kind == "memoryAllocationDetails" && (p.Type == "" || p.Method == "") {
 		return fmt.Errorf("codelevelanalysis: memoryAllocationDetails requires type and method")

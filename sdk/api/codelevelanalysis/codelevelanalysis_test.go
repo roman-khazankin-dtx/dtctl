@@ -1,9 +1,14 @@
 package codelevelanalysis
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
 )
 
 func TestEncodeLeafType(t *testing.T) {
@@ -139,5 +144,83 @@ func TestDC1EscapesToPercent11(t *testing.T) {
 	v.Set("servicefilter", "42\x110")
 	if got := v.Encode(); got != "servicefilter=42%110" {
 		t.Fatalf("DC1 escape drifted: %q", got)
+	}
+}
+
+// TestPollRoutesToSubmitServerID verifies the async flow pins every /result poll
+// to the cluster node named by the submit's serverId header — a poll routed to a
+// different node would not know the token.
+func TestPollRoutesToSubmitServerID(t *testing.T) {
+	var pollURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/methodhotspots/"):
+			// Submit lands on node 7 and starts the async task.
+			w.Header().Set("serverId", "7")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"token":"tok-1"}`))
+		case strings.Contains(r.URL.Path, "/result"):
+			pollURL = r.URL.String()
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := httpclient.New(srv.URL, httpclient.WithToken("dt0c01.test"))
+	if err != nil {
+		t.Fatalf("httpclient.New: %v", err)
+	}
+
+	resp, err := NewHandler(c).Run(context.Background(), Payload{
+		Kind: "methodHotspots", EntityID: "PROCESS_GROUP-ABC", From: 1, To: 2,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if resp.Status != "completed" {
+		t.Fatalf("status = %q, want completed", resp.Status)
+	}
+	if !strings.Contains(pollURL, "serverId=7") {
+		t.Errorf("poll URL %q missing serverId=7 from submit header", pollURL)
+	}
+	if !strings.Contains(pollURL, "token=tok-1") {
+		t.Errorf("poll URL %q missing token", pollURL)
+	}
+}
+
+// TestPollServerIDDefaultsWhenHeaderAbsent verifies a missing serverId header
+// falls back to the -1 "no preference" sentinel rather than breaking the URL.
+func TestPollServerIDDefaultsWhenHeaderAbsent(t *testing.T) {
+	var pollURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/methodhotspots/"):
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"token":"tok-2"}`))
+		case strings.Contains(r.URL.Path, "/result"):
+			pollURL = r.URL.String()
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := httpclient.New(srv.URL, httpclient.WithToken("dt0c01.test"))
+	if err != nil {
+		t.Fatalf("httpclient.New: %v", err)
+	}
+
+	if _, err := NewHandler(c).Run(context.Background(), Payload{
+		Kind: "methodHotspots", EntityID: "PROCESS_GROUP-ABC", From: 1, To: 2,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(pollURL, "serverId=-1") {
+		t.Errorf("poll URL %q should default serverId to -1", pollURL)
 	}
 }
