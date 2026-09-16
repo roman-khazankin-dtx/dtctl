@@ -212,6 +212,12 @@ func (h *Handler) poll(ctx context.Context, p Payload, token string, serverID in
 		}
 
 		sc := resp.StatusCode()
+		if sc == 429 {
+			// Rate limited (the shared client already retried a few times at the
+			// transport layer). Just keep polling — a burst of 429s must not
+			// exhaust the error budget and abort an otherwise-healthy analysis.
+			continue
+		}
 		if sc != 200 && sc != 202 && sc != 204 {
 			errCount++
 			if errCount >= maxPollErrors {

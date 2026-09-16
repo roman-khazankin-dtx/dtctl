@@ -191,6 +191,53 @@ func TestPollRoutesToSubmitServerID(t *testing.T) {
 	}
 }
 
+// TestPollRetriesOn429 verifies a 429 during polling is retried rather than
+// treated as a fatal error. Transport-level retry is disabled so the poll loop
+// itself has to tolerate the rate-limit response.
+func TestPollRetriesOn429(t *testing.T) {
+	var resultCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/methodhotspots/"):
+			w.Header().Set("serverId", "3")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"token":"tok-429"}`))
+		case strings.Contains(r.URL.Path, "/result"):
+			resultCalls++
+			if resultCalls == 1 {
+				w.WriteHeader(http.StatusTooManyRequests) // 429 on the first poll
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := httpclient.New(srv.URL,
+		httpclient.WithToken("dt0c01.test"),
+		httpclient.WithRetry(0, 0, 0), // isolate the poll loop from transport retry
+	)
+	if err != nil {
+		t.Fatalf("httpclient.New: %v", err)
+	}
+
+	resp, err := NewHandler(c).Run(context.Background(), Payload{
+		Kind: "methodHotspots", EntityID: "PROCESS_GROUP-ABC", From: 1, To: 2,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if resp.Status != "completed" {
+		t.Fatalf("status = %q, want completed", resp.Status)
+	}
+	if resultCalls != 2 {
+		t.Errorf("expected the 429 poll to be retried (2 /result calls), got %d", resultCalls)
+	}
+}
+
 // TestPollServerIDDefaultsWhenHeaderAbsent verifies a missing serverId header
 // falls back to the -1 "no preference" sentinel rather than breaking the URL.
 func TestPollServerIDDefaultsWhenHeaderAbsent(t *testing.T) {
