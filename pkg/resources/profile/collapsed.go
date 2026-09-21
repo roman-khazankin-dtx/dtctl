@@ -6,11 +6,15 @@ import (
 	"strings"
 )
 
-// ToCollapsed renders the Brendan Gregg collapsed stack format grouped by thread state.
-// Each section is sorted by that state's count descending; top > 0 limits each section to N entries.
-// appOnly strips frames the profiler did not classify as application code
-// (apiInfo.systemApi) from each path — see nodeIsApp.
-// Returns empty string for unsupported kinds or missing data.
+// ToCollapsed renders collapsed (folded) stacks: one line per unique stack,
+// `frame1;frame2;...;frameN running=.. lock=.. net_io=.. disk_io=.. wait=..`,
+// sorted by RUNNING descending. Unlike single-metric folded output it keeps all
+// five thread-state counts on each line, so one read shows whether a stack is
+// CPU-bound or blocked without emitting a separate flamegraph per state.
+// top > 0 caps the number of rows; it does not change the shape. appOnly strips
+// frames the profiler did not classify as application code (apiInfo.systemApi)
+// from each path — see nodeIsApp. Returns empty string for unsupported kinds or
+// missing data.
 func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 	switch kind {
 	case "memoryAllocation", "memoryAllocationDetails":
@@ -61,11 +65,27 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 		nodeMap[id] = nd
 	}
 
-	type line struct {
-		path    string
-		samples map[string]int
-	}
-	var all []line
+	// Emit one folded line per unique stack. Two corrections over a naive
+	// leaf-only fold, both load-bearing:
+	//
+	//  1. Samples are per-node SELF (exclusive) counts, and interior methods hold
+	//     the overwhelming majority of them — a method that is hot in its own body
+	//     while also calling others carries self time and is NOT a leaf. Emitting
+	//     only childless nodes therefore discards nearly all of the signal
+	//     (measured ~98% of RUNNING samples on a real tree). So we emit a line for
+	//     EVERY node that has samples, with the path root→node, and the summed
+	//     self counts reconcile with the analysis totals.
+	//  2. Distinct nodes can share the same stack string — through recursion, or
+	//     because --app-only collapses different subtrees onto one application path
+	//     once library/agent frames are stripped out of it. We aggregate by path
+	//     and sum, so each stack prints exactly once with correct totals instead of
+	//     as several partial duplicates.
+	//
+	// The shape is one stable schema regardless of top/limit: one line per unique
+	// stack carrying all five thread-state counters, sorted by RUNNING descending.
+	// top only caps how many rows print — it never restructures the output.
+	agg := make(map[string]map[string]int)
+	var order []string
 
 	var dfs func(id string, stack []string)
 	dfs = func(id string, stack []string) {
@@ -75,10 +95,21 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 		}
 		path := stack
 		if n.label != "" && (!appOnly || n.isApp) {
-			path = append(stack, n.label)
+			// Copy before extending: sibling recursions must not alias one
+			// backing array, or a later sibling's frame corrupts an earlier path.
+			path = append(append(make([]string, 0, len(stack)+1), stack...), n.label)
 		}
-		if len(n.children) == 0 && len(path) > 0 {
-			all = append(all, line{strings.Join(path, ";"), n.samples})
+		if len(path) > 0 && sampleTotal(n.samples) > 0 {
+			key := strings.Join(path, ";")
+			m := agg[key]
+			if m == nil {
+				m = make(map[string]int, 5)
+				agg[key] = m
+				order = append(order, key)
+			}
+			for k, v := range n.samples {
+				m[k] += v
+			}
 		}
 		for _, cid := range n.children {
 			dfs(cid, path)
@@ -86,54 +117,35 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 	}
 
 	dfs(rootID, nil)
-	if len(all) == 0 {
+	if len(agg) == 0 {
 		return ""
 	}
 
-	var sb strings.Builder
-
-	if top == 0 {
-		sort.SliceStable(all, func(i, j int) bool {
-			return all[i].samples["RUNNING"] > all[j].samples["RUNNING"]
-		})
-		for _, l := range all {
-			fmt.Fprintf(&sb, "%s running=%d lock=%d net_io=%d disk_io=%d wait=%d\n",
-				l.path, l.samples["RUNNING"], l.samples["LOCK"],
-				l.samples["NET_IO"], l.samples["DISK_IO"], l.samples["WAIT"],
-			)
-		}
-		return sb.String()
+	sort.SliceStable(order, func(i, j int) bool {
+		return agg[order[i]]["RUNNING"] > agg[order[j]]["RUNNING"]
+	})
+	if top > 0 && len(order) > top {
+		order = order[:top]
 	}
 
-	stateKeys := []string{"RUNNING", "LOCK", "NET_IO", "DISK_IO", "WAIT"}
-	for i, key := range stateKeys {
-		if i > 0 {
-			sb.WriteByte('\n')
-		}
-		sorted := make([]line, len(all))
-		copy(sorted, all)
-		sort.SliceStable(sorted, func(i, j int) bool {
-			return sorted[i].samples[key] > sorted[j].samples[key]
-		})
-		if sorted[0].samples[key] == 0 {
-			fmt.Fprintf(&sb, "# %s — no activity\n", key)
-			continue
-		}
-		if len(sorted) > top {
-			sorted = sorted[:top]
-		}
-		fmt.Fprintf(&sb, "# %s\n", key)
-		for _, l := range sorted {
-			if l.samples[key] == 0 {
-				break
-			}
-			fmt.Fprintf(&sb, "%s running=%d lock=%d net_io=%d disk_io=%d wait=%d\n",
-				l.path, l.samples["RUNNING"], l.samples["LOCK"],
-				l.samples["NET_IO"], l.samples["DISK_IO"], l.samples["WAIT"],
-			)
-		}
+	var sb strings.Builder
+	for _, key := range order {
+		s := agg[key]
+		fmt.Fprintf(&sb, "%s running=%d lock=%d net_io=%d disk_io=%d wait=%d\n",
+			key, s["RUNNING"], s["LOCK"], s["NET_IO"], s["DISK_IO"], s["WAIT"],
+		)
 	}
 	return sb.String()
+}
+
+// sampleTotal sums a node's per-state sample counts; a node with zero total
+// contributes no line to the fold.
+func sampleTotal(s map[string]int) int {
+	t := 0
+	for _, v := range s {
+		t += v
+	}
+	return t
 }
 
 // memoryCollapsed folds a memory allocation result into Brendan-Gregg-style leaf

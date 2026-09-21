@@ -21,8 +21,13 @@ var execProfileCmd = &cobra.Command{
 	Long: `Run a code-level profiling analysis via the Dynatrace code-level analysis API.
 
 The analysis is asynchronous server-side; this command polls until it completes.
-Output is Brendan Gregg collapsed/folded stacks grouped by thread state:
+Output is collapsed (folded) stacks — one line per unique stack, carrying all
+five thread-state counts so a single read shows whether a stack is CPU-bound or
+blocked (no separate flamegraph per state):
   frame1;frame2;...;frameN running=16 lock=0 net_io=0 disk_io=0 wait=0
+Each frame's own (self) samples are attributed to its stack, so the counts
+reconcile with the analysis totals. --top caps the number of rows; it never
+changes the shape.
 
 Entities: only PROCESS, PROCESS_GROUP, and PROCESS_GROUP_INSTANCE are eligible
 — services are not accepted by the code-level analysis API. PROCESS is the
