@@ -68,13 +68,20 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 	// Emit one folded line per unique stack. Two corrections over a naive
 	// leaf-only fold, both load-bearing:
 	//
-	//  1. Samples are per-node SELF (exclusive) counts, and interior methods hold
-	//     the overwhelming majority of them — a method that is hot in its own body
-	//     while also calling others carries self time and is NOT a leaf. Emitting
-	//     only childless nodes therefore discards nearly all of the signal
-	//     (measured ~98% of RUNNING samples on a real tree). So we emit a line for
-	//     EVERY node that has samples, with the path root→node, and the summed
-	//     self counts reconcile with the analysis totals.
+	//  1. Code-level-analysis samples are CUMULATIVE (inclusive): a node's count
+	//     includes everything its children accrued, so a parent's RUNNING equals
+	//     the sum of its children's RUNNING plus whatever the method spent in its
+	//     own body. A method that is hot in its own body while also calling others
+	//     is an interior node, and a leaf-only fold drops all of that interior self
+	//     time (measured ~98% of RUNNING samples on a real tree). We recover each
+	//     node's SELF cost — self = node − Σ children, per thread state — and emit
+	//     the path root→node with those self counts. Summed across the tree the
+	//     self counts telescope back to the root total, so emitted RUNNING equals
+	//     the analysis total. A node whose self is zero (a pure pass-through that
+	//     only forwards to children) contributes no line. Counts are clamped at
+	//     zero to absorb sampling jitter that can make a difference slightly
+	//     negative (and to skip synthetic roots whose own count is below their
+	//     children's).
 	//  2. Distinct nodes can share the same stack string — through recursion, or
 	//     because --app-only collapses different subtrees onto one application path
 	//     once library/agent frames are stripped out of it. We aggregate by path
@@ -86,6 +93,30 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 	// top only caps how many rows print — it never restructures the output.
 	agg := make(map[string]map[string]int)
 	var order []string
+
+	// selfSamples derives a node's own (exclusive) per-state counts from the
+	// cumulative API counts: self = node − Σ children, clamped at zero per state.
+	selfSamples := func(n *node) map[string]int {
+		self := make(map[string]int, len(n.samples))
+		for k, v := range n.samples {
+			self[k] = v
+		}
+		for _, cid := range n.children {
+			c := nodeMap[cid]
+			if c == nil {
+				continue
+			}
+			for k, v := range c.samples {
+				self[k] -= v
+			}
+		}
+		for k, v := range self {
+			if v < 0 {
+				self[k] = 0
+			}
+		}
+		return self
+	}
 
 	var dfs func(id string, stack []string)
 	dfs = func(id string, stack []string) {
@@ -99,7 +130,8 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 			// backing array, or a later sibling's frame corrupts an earlier path.
 			path = append(append(make([]string, 0, len(stack)+1), stack...), n.label)
 		}
-		if len(path) > 0 && sampleTotal(n.samples) > 0 {
+		self := selfSamples(n)
+		if len(path) > 0 && sampleTotal(self) > 0 {
 			key := strings.Join(path, ";")
 			m := agg[key]
 			if m == nil {
@@ -107,7 +139,7 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 				agg[key] = m
 				order = append(order, key)
 			}
-			for k, v := range n.samples {
+			for k, v := range self {
 				m[k] += v
 			}
 		}
