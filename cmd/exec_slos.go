@@ -9,6 +9,7 @@ import (
 
 	"github.com/dynatrace-oss/dtctl/pkg/resources/slo"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 // execSLOCmd evaluates an SLO
@@ -85,7 +86,7 @@ Examples:
 		// Poll for results with exponential backoff
 		fmt.Printf("Polling for evaluation results...\n")
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
+		ctx, cancel := context.WithTimeout(cmdContext(cmd), time.Duration(timeoutSeconds)*time.Second)
 		defer cancel()
 
 		pollInterval := 2 * time.Second
@@ -121,8 +122,13 @@ Examples:
 					return printer.Print(result)
 				}
 
-				// Wait before next poll with exponential backoff
-				time.Sleep(pollInterval)
+				// Wait before next poll with exponential backoff, but stay
+				// responsive to cancellation instead of blocking through it.
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("timeout waiting for SLO evaluation to complete")
+				case <-time.After(pollInterval):
+				}
 				if pollInterval < maxPollInterval {
 					pollInterval *= 2
 					if pollInterval > maxPollInterval {
@@ -137,4 +143,13 @@ Examples:
 func init() {
 	// SLO flags
 	execSLOCmd.Flags().Int("timeout", 30, "timeout in seconds when polling for evaluation results")
+	// Becomes a duration flag in 1.0; a bare integer errors
+	// (contrib breaking-changes/timeout-duration.md).
+	stability.MarkFlag(execSLOCmd, "timeout", stability.Experimental, pre10Since)
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(execSLOCmd)
 }

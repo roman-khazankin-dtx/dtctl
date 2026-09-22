@@ -38,11 +38,13 @@ dtctl wait query "fetch spans | filter test_id='test-123'" --for=count=1 --timeo
 dtctl query "timeseries avg(dt.host.cpu.usage)" -o chart --plain
 ```
 
+Billable `fetch` (logs, events, bizevents, spans) bills by bytes scanned and dashboard tiles re-bill on every refresh — read "Scan Cost" in `references/DQL-reference.md` before emitting DQL, and treat a PARTIAL or sampled result as incomplete.
+
 dtctl not installed/working? See [references/troubleshooting.md](references/troubleshooting.md).
 
 ## Resources & verbs
 
-Resources and aliases are discoverable via `dtctl commands` (run at init). They include: analyzer, anomaly-detector, app, aws/azure/gcp connection & monitoring, bucket, copilot-skill, dashboard, document, edgeconnect, extension, extension-config, function, group, intent, lookup, notebook, notification, sdk-version, segment, settings, settings-schema, slo, slo-template, trash, user, workflow, workflow-execution. **Use IDs, not names** — names may be ambiguous and fail.
+Resources and aliases are discoverable via `dtctl commands` (run at init). They include: analyzer, anomaly-detector, app, aws/azure/gcp connection & monitoring, bucket, copilot-skill, dashboard, document, edgeconnect, environment, extension, extension-config, function, group, intent, license, license-settings, lookup, notebook, notification, sdk-version, segment, settings, settings-schema, slo, slo-template, trash, user, workflow, workflow-execution. **Use IDs, not names** — names may be ambiguous and fail.
 
 | Verb | Example |
 |------|---------|
@@ -51,7 +53,7 @@ Resources and aliases are discoverable via `dtctl commands` (run at init). They 
 | exec | `dtctl exec function <id> --payload '{...}'` · `dtctl exec analyzer <id> --input '{...}'` · `dtctl exec profiling hotspots PROCESS_GROUP_INSTANCE-xxx` (experimental code-level profiling on PG/PGI; kinds: hotspots, memory; folded stacks with per-stack running/lock/io/wait; optional `--leaf-type total\|service\|background`, `--app-only`, `--limit`, `--default-timeframe-start now()-1h`) (also workflow, copilot) |
 | query / wait | `dtctl query "fetch logs \| limit 10"` · `dtctl wait query ... --for=any` |
 | inspect | `dtctl inspect <file> --head 20` · `--tail`, `--page --offset N --limit M`, `--fields a,b`, `--schema`, `--stats`, `--sample N`, `--list` (row access over a spilled result file — no Grail re-query) |
-| logs / history / restore | `dtctl logs workflow-execution <id>` · `dtctl restore dashboard <id> --version 3` |
+| logs / history / restore | `dtctl logs workflow-execution <id>` · `dtctl history dashboard <id>` · `dtctl restore dashboard <id> 3` (version is positional; snapshots exist only if the update passed `--create-snapshot`) |
 | share / unshare | `dtctl share dashboard <id> --user a@example.com` |
 | find / open | `dtctl find intents --data trace.id=abc` · `dtctl open intent <app/intent> --data k=v` |
 | diff / verify | `dtctl diff -f wf.yaml` · `dtctl verify query 'fetch logs' --fail-on-warn` · `dtctl verify analyzer <id> -f in.json` |
@@ -153,6 +155,23 @@ Gotchas: set `davis.enabled: false` on data tiles; `makeTimeseries` for log/span
 - Verify before mutating: `dtctl auth can-i <verb> <resource>`. Scopes: [TOKEN_SCOPES.md](https://github.com/dynatrace-oss/dtctl/blob/main/docs/TOKEN_SCOPES.md).
 - Destructive ops may be blocked by safety level — switch with `dtctl config use-context <name>`, or raise the level when creating the context.
 - Prefer `get`/`describe` first; `--mine` scopes to resources you own; `--plain` for all machine consumption.
+
+## Credentials & teardown
+
+Credentials are dtctl's business: read and remove them only through dtctl.
+
+```bash
+dtctl config delete-context <name> --delete-credentials  # context + its credential
+dtctl config delete-credentials <token-ref>              # credential alone (shared, or context already gone)
+dtctl auth status --plain                                # presence check — never prints the token
+```
+
+**Never invoke OS keychain tooling** — `security` (macOS), `secret-tool`
+(Linux), `cmdkey` (Windows) — for any purpose, cleanup included. Their delete
+verbs miss most of what a credential occupies; their read verbs print secrets,
+and `security dump-keychain` covers *every* keychain on the machine, not just
+dtctl's. **Never verify a deletion by reading the secret back** — a teardown
+step that prints a token has leaked exactly what it was told to destroy.
 
 ## More
 

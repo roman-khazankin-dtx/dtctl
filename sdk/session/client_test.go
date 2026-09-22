@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
 
 func TestNew(t *testing.T) {
@@ -139,9 +141,18 @@ func TestIsRetryable(t *testing.T) {
 		t.Error("isRetryable() should return false for 200 response")
 	}
 
-	// Test with error - should retry
-	if !isRetryable(nil, http.ErrServerClosed) {
-		t.Error("isRetryable() should return true for error")
+	// A transport error still carries a response: resty builds one around the
+	// request before calling the transport, and only leaves RawResponse nil. That
+	// is the case worth retrying.
+	if !isRetryable(&resty.Response{Request: resp.Request}, http.ErrServerClosed) {
+		t.Error("isRetryable() should return true for a transport error")
+	}
+
+	// No response at all means the request never left the process -- resty
+	// returns (nil, err) from a before-request middleware. Retrying cannot change
+	// the outcome, and resty dereferences the nil response to prepare the retry.
+	if isRetryable(nil, http.ErrServerClosed) {
+		t.Error("isRetryable() should return false when the request was never sent")
 	}
 }
 
@@ -820,5 +831,100 @@ func TestReadRequestBodyForDebug_NilGetBodyReader(t *testing.T) {
 	got := readRequestBodyForDebug(req)
 	if got != "" {
 		t.Fatalf("readRequestBodyForDebug() = %q, want empty string", got)
+	}
+}
+
+// TestNewClientFromConfig_LocalConfigEnvVarExpansion verifies that
+// ${VAR} references in the environment URL of a local config are expanded
+// by NewClientFromConfig before the Dynatrace URL validation runs.
+func TestNewClientFromConfig_LocalConfigEnvVarExpansion(t *testing.T) {
+	t.Setenv(EnvDisableKeyring, "1")
+
+	t.Run("valid Dynatrace URL via env var", func(t *testing.T) {
+		t.Setenv("DT_ENV_URL", "https://abc12345.apps.dynatrace.com")
+		cfg := newLocalConfig(t, "${DT_ENV_URL}", "some-ref", nil)
+		// Token resolution fails (no real keyring), but the URL check must pass.
+		_, err := NewClientFromConfig(cfg)
+		if err != nil && contains(err.Error(), "dynatrace") {
+			t.Errorf("URL check failed for valid Dynatrace URL via env var: %v", err)
+		}
+	})
+
+	t.Run("non-Dynatrace URL via env var rejected", func(t *testing.T) {
+		t.Setenv("DT_ENV_URL", "https://evil.example.com")
+		cfg := newLocalConfig(t, "${DT_ENV_URL}", "some-ref", nil)
+		_, err := NewClientFromConfig(cfg)
+		if err == nil {
+			t.Fatal("NewClientFromConfig() succeeded for non-Dynatrace URL via env var, want error")
+		}
+		if !contains(err.Error(), "dynatrace") {
+			t.Errorf("error = %q, want it to mention dynatrace", err.Error())
+		}
+	})
+}
+
+// TestNewClientFromConfig_LocalConfigDomainAllowlist verifies that
+// NewClientFromConfig rejects local configs targeting non-Dynatrace hosts.
+// The guard fires before token resolution so no real token is needed.
+func TestNewClientFromConfig_LocalConfigDomainAllowlist(t *testing.T) {
+	t.Setenv(EnvDisableKeyring, "1")
+
+	tests := []struct {
+		name        string
+		environment string
+		wantErr     string
+	}{
+		{
+			name:        "foreign host rejected",
+			environment: "https://evil.example.com",
+			wantErr:     "dynatrace.com",
+		},
+		{
+			name:        "http rejected",
+			environment: "http://abc12345.apps.dynatrace.com",
+			wantErr:     "https",
+		},
+		{
+			name:        "embedded query rejected",
+			environment: "https://abc12345.apps.dynatrace.com?foo=bar",
+			wantErr:     "query",
+		},
+		{
+			name:        "embedded credentials rejected",
+			environment: "https://user:pass@abc12345.apps.dynatrace.com",
+			wantErr:     "credentials",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := newLocalConfig(t, tt.environment, "some-ref", nil)
+			_, err := NewClientFromConfig(cfg)
+			if err == nil {
+				t.Fatalf("NewClientFromConfig() succeeded for local config with %q, want error containing %q", tt.environment, tt.wantErr)
+			}
+			if !contains(err.Error(), tt.wantErr) {
+				t.Errorf("NewClientFromConfig() error = %q, want it to contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestNewClientFromConfig_LocalUnresolvedEnvVarNamesTheReference verifies that
+// a .dtctl.yaml whose environment did not resolve is reported in terms of the
+// reference the file actually contains. An unresolved value stays literal, and
+// the origin check can only describe that as a malformed URL — useless to a
+// developer who has just cloned a repo and not exported the variable yet.
+func TestNewClientFromConfig_LocalUnresolvedEnvVarNamesTheReference(t *testing.T) {
+	cfg := newLocalConfig(t, "${DT_TEST_UNSET_ENVIRONMENT_URL}", "some-ref", nil)
+
+	_, err := NewClientFromConfig(cfg)
+	if err == nil {
+		t.Fatal("NewClientFromConfig() succeeded with an unset environment variable, want error")
+	}
+	for _, want := range []string{"DT_TEST_UNSET_ENVIRONMENT_URL", "did not resolve"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("NewClientFromConfig() error = %q, want it to contain %q", err.Error(), want)
+		}
 	}
 }

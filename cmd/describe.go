@@ -12,6 +12,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azureconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azuremonitoringconfig"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 // describeCmd represents the describe command
@@ -33,7 +34,8 @@ Supported resources:
   users                   groups                     lookup-tables (lu)
   trash                   azure connection           azure monitoring
   extensions (ext)        extension-configs (extcfg) hub-extensions
-  analyzers (az)          api`,
+  analyzers (az)          api                        environment
+  license`,
 	Example: `  # Describe a workflow to see its trigger and task details
   dtctl describe workflow my-workflow
 
@@ -310,7 +312,9 @@ func init() {
 	describeAzureProviderCmd.AddCommand(describeAzureMonitoringConfigCmd)
 	rootCmd.AddCommand(describeCmd)
 	describeCmd.AddCommand(describeWorkflowCmd)
+	describeCmd.AddCommand(describeSchedulingRuleCmd)
 	describeCmd.AddCommand(describeBreakpointCmd)
+	markLiveDebuggerExperimental(describeBreakpointCmd)
 	describeCmd.AddCommand(describeWorkflowExecutionCmd)
 	describeCmd.AddCommand(describeDashboardCmd)
 	describeCmd.AddCommand(describeNotebookCmd)
@@ -334,4 +338,17 @@ func init() {
 	describeCmd.AddCommand(describeHubExtensionCmd)
 	describeCmd.AddCommand(describeAnalyzerCmd)
 	describeCmd.AddCommand(describeAPICmd)
+	describeCmd.AddCommand(describeEnvironmentCmd)
+	describeCmd.AddCommand(describeLicenseCmd)
+}
+
+// Declared stable: the invocation and output contract of these commands is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(describeCmd)
+	stability.MarkStable(describeAWSProviderCmd)
+	stability.MarkStable(describeAzureProviderCmd)
+	stability.MarkStable(describeAzureConnectionCmd)
+	stability.MarkStable(describeAzureMonitoringConfigCmd)
+	stability.MarkStable(describeGCPProviderCmd)
 }

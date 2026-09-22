@@ -16,6 +16,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/resolver"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/util/template"
 	"github.com/dynatrace-oss/dtctl/pkg/vfs"
 )
@@ -227,13 +228,15 @@ Examples:
 		height, _ := cmd.Flags().GetInt("height")
 		fullscreen, _ := cmd.Flags().GetBool("fullscreen")
 
-		// Get query limit options
-		maxResultRecords, _ := cmd.Flags().GetInt64("max-result-records")
-		maxResultBytes, _ := cmd.Flags().GetInt64("max-result-bytes")
-		defaultScanLimitGbytes, _ := cmd.Flags().GetFloat64("default-scan-limit-gbytes")
+		// Query limits resolve flag -> context config -> global config -> server
+		// default, so a context-level ceiling also covers invocations that never
+		// passed the flags. See resolveQueryLimits.
+		queryLimits, err := resolveQueryLimits(cmd, cfg)
+		if err != nil {
+			return err
+		}
 
 		// Get query execution options
-		defaultSamplingRatio, _ := cmd.Flags().GetFloat64("default-sampling-ratio")
 		fetchTimeoutSeconds, _ := cmd.Flags().GetInt32("fetch-timeout-seconds")
 		enablePreview, _ := cmd.Flags().GetBool("enable-preview")
 		noProgress, _ := cmd.Flags().GetBool("no-progress")
@@ -379,10 +382,10 @@ Examples:
 			Width:                        width,
 			Height:                       height,
 			Fullscreen:                   fullscreen,
-			MaxResultRecords:             maxResultRecords,
-			MaxResultBytes:               maxResultBytes,
-			DefaultScanLimitGbytes:       defaultScanLimitGbytes,
-			DefaultSamplingRatio:         defaultSamplingRatio,
+			MaxResultRecords:             queryLimits.MaxResultRecords,
+			MaxResultBytes:               queryLimits.MaxResultBytes,
+			DefaultScanLimitGbytes:       queryLimits.ScanLimitGbytes,
+			DefaultSamplingRatio:         queryLimits.SamplingRatio,
 			FetchTimeoutSeconds:          fetchTimeoutSeconds,
 			EnablePreview:                enablePreview,
 			EnforceQueryConsumptionLimit: enforceQueryConsumptionLimit,
@@ -408,6 +411,9 @@ Examples:
 
 		// Handle live mode
 		if live {
+			if !caps.LongRunningStreams {
+				return &CapabilityError{Feature: "live mode"}
+			}
 			// Warn about flags that are not meaningfully applicable in live mode
 			if len(metadataFields) > 0 {
 				output.PrintWarning("--metadata is ignored in live mode (metadata is not displayed during live updates)")
@@ -443,7 +449,6 @@ Examples:
 				Width:      width,
 				Height:     height,
 				Fullscreen: fullscreen,
-				AgentMode:  agentMode,
 			}
 
 			printer := output.NewPrinterWithOpts(printerOpts)
@@ -745,6 +750,7 @@ func init() {
 	queryCmd.Flags().Int64("max-result-records", 0, "maximum number of result records to return (0 = use default, typically 1000)")
 	queryCmd.Flags().Int64("max-result-bytes", 0, "maximum result size in bytes (0 = use default)")
 	queryCmd.Flags().Float64("default-scan-limit-gbytes", 0, "scan limit in gigabytes (0 = use default)")
+	addQueryLimitFlags(queryCmd)
 
 	// Query execution flags
 	queryCmd.Flags().Float64("default-sampling-ratio", 0, "default sampling ratio (0 = use default, normalized to power of 10 <= 100000)")
@@ -773,10 +779,15 @@ analysisTimeframe,contributions,metrics`)
 	queryCmd.Flags().Lookup("metadata").NoOptDefVal = "all"
 
 	// Snapshot decode flag
-	queryCmd.Flags().String("decode-snapshots", "", `(experimental) decode Live Debugger snapshot payloads in query results
+	queryCmd.Flags().String("decode-snapshots", "", `decode Live Debugger snapshot payloads in query results
 bare --decode-snapshots simplifies variant wrappers to plain values;
 --decode-snapshots=full preserves the full decoded tree with type annotations`)
 	queryCmd.Flags().Lookup("decode-snapshots").NoOptDefVal = "simplified"
+	// The flag is weaker than the command that carries it: `query` is stable,
+	// but this decodes Live Debugger snapshot payloads (see
+	// markLiveDebuggerExperimental). Marking the flag rather than the command
+	// is exactly the case a per-flag tier exists for.
+	stability.MarkFlag(queryCmd, "decode-snapshots", stability.Experimental, liveDebuggerSince)
 
 	// Filter segment flags
 	queryCmd.Flags().StringArrayP("segment", "S", nil, `filter segment ID or name (repeatable, max 10, AND-combined)
@@ -870,4 +881,10 @@ func metadataFieldCompletion(_ *cobra.Command, _ []string, toComplete string) ([
 	}
 
 	return suggestions, cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(queryCmd)
 }

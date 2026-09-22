@@ -1,8 +1,18 @@
+# docs/site/ is the retired documentation site: redirect stubs only, kept so
+# that URLs published before the docs moved into docs/ keep resolving. The
+# canonical docs live in docs/ and are not built here.
 name: Deploy GitHub Pages
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'docs/site/**'
+      - '.github/workflows/pages.yml'
+
+  # Build (but do not deploy) on PRs, so a broken site config is caught before
+  # it reaches main -- the deploy path only ever runs post-merge.
+  pull_request:
     paths:
       - 'docs/site/**'
       - '.github/workflows/pages.yml'
@@ -28,22 +38,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # Needs pages: write, which fork PRs never get -- and a PR only needs the
+      # build to prove the site still compiles.
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
 
       - name: Build with Jekyll
-        uses: actions/jekyll-build-pages@v1
+        uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1.0.13
         with:
           source: docs/site
           destination: ./_site
 
+      - name: Check every page is a redirect
+        run: |
+          missing=$(grep -RL 'http-equiv="refresh"' ./_site --include='*.html' || true)
+          if [ -n "$missing" ]; then
+            echo "::error::These built pages are not redirects. docs/site/ is retired -- put the content in docs/ instead:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "All $(find ./_site -name '*.html' | wc -l) built pages redirect to docs/."
+
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
 
   deploy:
     name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -52,4 +77,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

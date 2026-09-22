@@ -11,11 +11,18 @@ import (
 	"strings"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
+	"github.com/dynatrace-oss/dtctl/pkg/diagnostic"
 )
 
 const (
 	SchemaID    = "builtin:hyperscaler-authentication.connections.aws"
 	SettingsAPI = "/platform/classic/environment-api/v2/settings/objects"
+
+	// listFields is the field projection a re-appliable export needs. The
+	// Settings API list defaults to objectId + value only, which strips the
+	// schemaId and scope that apply reads to tell a connection document from a
+	// custom document. See https://github.com/dynatrace-oss/dtctl/issues/509
+	listFields = "objectId,schemaId,schemaVersion,scope,value"
 
 	// TypeRoleBased is the only auth type currently supported by dtctl.
 	TypeRoleBased = "awsRoleBasedAuthentication"
@@ -149,7 +156,7 @@ func (h *Handler) listBySchema(schemaID string) ([]AWSConnection, error) {
 			Style:        client.PaginationSettingsAPI,
 			PageKeyParam: "nextPageKey",
 			NextPageKey:  nextPageKey,
-			Filters:      map[string]string{"schemaIds": schemaID},
+			Filters:      map[string]string{"schemaIds": schemaID, "fields": listFields},
 		}.Apply(req)
 
 		resp, err := req.Get(SettingsAPI)
@@ -157,6 +164,14 @@ func (h *Handler) listBySchema(schemaID string) ([]AWSConnection, error) {
 			return nil, err
 		}
 		if resp.IsError() {
+			if resp.StatusCode() == 403 {
+				return nil, diagnostic.SettingsForbidden(diagnostic.SettingsDenial{
+					Operation:  "list aws_connections",
+					Permission: "settings:objects:read",
+					SchemaID:   schemaID,
+					Body:       resp.String(),
+				})
+			}
 			return nil, fmt.Errorf("failed to list aws_connections for schema %q: %s", schemaID, resp.String())
 		}
 
@@ -181,6 +196,15 @@ func (h *Handler) Get(id string) (*AWSConnection, error) {
 		return nil, err
 	}
 	if resp.IsError() {
+		if resp.StatusCode() == 403 {
+			return nil, diagnostic.SettingsForbidden(diagnostic.SettingsDenial{
+				Operation:      fmt.Sprintf("get aws_connection %q", id),
+				Permission:     "settings:objects:read",
+				SchemaID:       SchemaID,
+				Body:           resp.String(),
+				ExistingObject: true,
+			})
+		}
 		return nil, fmt.Errorf("failed to get aws_connection: %s", resp.String())
 	}
 	flattenConnection(&result)
@@ -197,6 +221,15 @@ func (h *Handler) Delete(id string) error {
 		return err
 	}
 	if resp.IsError() {
+		if resp.StatusCode() == 403 {
+			return diagnostic.SettingsForbidden(diagnostic.SettingsDenial{
+				Operation:      fmt.Sprintf("delete aws_connection %q", id),
+				Permission:     "settings:objects:write",
+				SchemaID:       SchemaID,
+				Body:           resp.String(),
+				ExistingObject: true,
+			})
+		}
 		return fmt.Errorf("failed to delete aws_connection: status %d: %s", resp.StatusCode(), resp.String())
 	}
 	return nil
@@ -249,7 +282,12 @@ func (h *Handler) Create(req AWSConnectionCreate) (*AWSConnection, error) {
 		case 400:
 			return nil, fmt.Errorf("invalid aws_connection: %s", resp.String())
 		case 403:
-			return nil, fmt.Errorf("access denied to create aws_connection")
+			return nil, diagnostic.SettingsForbidden(diagnostic.SettingsDenial{
+				Operation:  "create aws_connection",
+				Permission: "settings:objects:write",
+				SchemaID:   req.SchemaID,
+				Body:       resp.String(),
+			})
 		case 404:
 			return nil, fmt.Errorf("schema %q not found", req.SchemaID)
 		case 409:
@@ -299,7 +337,13 @@ func (h *Handler) Update(objectID string, value Value) (*AWSConnection, error) {
 		case 400:
 			return nil, fmt.Errorf("invalid aws_connection: %s", resp.String())
 		case 403:
-			return nil, fmt.Errorf("access denied to update aws_connection %q", objectID)
+			return nil, diagnostic.SettingsForbidden(diagnostic.SettingsDenial{
+				Operation:      fmt.Sprintf("update aws_connection %q", objectID),
+				Permission:     "settings:objects:write",
+				SchemaID:       SchemaID,
+				Body:           resp.String(),
+				ExistingObject: true,
+			})
 		case 404:
 			return nil, fmt.Errorf("aws_connection %q not found", objectID)
 		case 409, 412:

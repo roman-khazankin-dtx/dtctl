@@ -9,6 +9,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/prompt"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/anomalydetector"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 // getAnomalyDetectorsCmd retrieves anomaly detectors
@@ -175,12 +176,28 @@ func resolveAnomalyDetector(handler *anomalydetector.Handler, identifier string)
 	if err == nil {
 		return ad, nil
 	}
+	// A 403 means the detector may well exist — reporting it as missing sends
+	// the user looking for the wrong problem and drops the permission
+	// diagnostics the handler attached.
+	if isPermissionDenied(err) {
+		return nil, err
+	}
 
 	// Fall back to title match
-	ad, err = handler.FindByName(identifier)
-	if err == nil {
+	ad, findErr := handler.FindByName(identifier)
+	if findErr == nil {
 		return ad, nil
+	}
+	if isPermissionDenied(findErr) {
+		return nil, findErr
 	}
 
 	return nil, fmt.Errorf("anomaly detector %q not found (run 'dtctl get anomaly-detectors' to list available detectors)", identifier)
+}
+
+// Declared stable: the invocation and output contract of these commands is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(deleteAnomalyDetectorCmd)
+	stability.MarkStable(getAnomalyDetectorsCmd)
 }

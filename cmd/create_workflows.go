@@ -8,6 +8,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/util/format"
 	"github.com/dynatrace-oss/dtctl/pkg/vfs"
 
@@ -65,11 +66,13 @@ Examples:
 
 		// Handle dry-run
 		if dryRun {
-			fmt.Println("Dry run: would create workflow")
-			fmt.Println("---")
-			fmt.Println(string(jsonData))
-			fmt.Println("---")
-			return nil
+			return newDryRunReport(cmd).
+				Linef("Dry run: would create workflow").
+				Linef("---").
+				Linef("%s", string(jsonData)).
+				Linef("---").
+				Payload(jsonData).
+				Print()
 		}
 
 		_, c, err := SetupWithSafety(safety.OperationCreate)
@@ -97,4 +100,10 @@ func init() {
 	createWorkflowCmd.Flags().StringP("file", "f", "", "file containing workflow definition (required)")
 	createWorkflowCmd.Flags().StringArray("set", []string{}, "set template variable (key=value)")
 	_ = createWorkflowCmd.MarkFlagRequired("file")
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(createWorkflowCmd)
 }

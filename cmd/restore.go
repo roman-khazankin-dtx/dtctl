@@ -13,6 +13,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/resolver"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 // restoreCmd represents the restore command
@@ -441,8 +442,24 @@ func init() {
 	restoreDashboardCmd.Flags().BoolVarP(&forceDelete, "force", "f", false, "Skip confirmation prompt")
 	restoreNotebookCmd.Flags().BoolVarP(&forceDelete, "force", "f", false, "Skip confirmation prompt")
 	restoreDocumentCmd.Flags().BoolVarP(&forceDelete, "force", "f", false, "Skip confirmation prompt")
+	// -f is reserved for --file in 1.0 (contrib breaking-changes/short-flag-f.md).
+	stability.MarkFlag(restoreWorkflowCmd, "force", stability.Experimental, pre10Since)
+	stability.MarkFlag(restoreDashboardCmd, "force", stability.Experimental, pre10Since)
+	stability.MarkFlag(restoreNotebookCmd, "force", stability.Experimental, pre10Since)
+	stability.MarkFlag(restoreDocumentCmd, "force", stability.Experimental, pre10Since)
 
 	// Restore trash flags
 	restoreTrashCmd.Flags().Bool("force", false, "Restore even if name conflicts exist")
 	restoreTrashCmd.Flags().String("new-name", "", "Restore with a new name")
+}
+
+// Declared stable: the invocation and output contract of these commands is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(restoreCmd)
+	stability.MarkStable(restoreDashboardCmd)
+	stability.MarkStable(restoreDocumentCmd)
+	stability.MarkStable(restoreNotebookCmd)
+	stability.MarkStable(restoreTrashCmd)
+	stability.MarkStable(restoreWorkflowCmd)
 }

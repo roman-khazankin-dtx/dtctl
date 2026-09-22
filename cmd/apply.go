@@ -11,6 +11,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/document"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/util/template"
 	"github.com/dynatrace-oss/dtctl/pkg/vfs"
 )
@@ -57,6 +58,7 @@ making it easy to deploy the same resource across multiple environments.
 
 Supported resource types:
   - Workflows (automation)
+  - Scheduling rules (automation)
   - Dashboards
   - Notebooks
   - Documents of any type (launchpad, custom app documents, e.g. acme:config)
@@ -84,6 +86,18 @@ Custom document types (--type):
   set; labels cannot be cleared, only replaced):
 
     dtctl apply -f doc.yaml --label team-a --label env:prod
+
+Version history (--create-snapshot):
+  Document updates overwrite content in place. Pass --create-snapshot to have the
+  API keep the pre-update state as a snapshot first, so it stays recoverable with
+  'dtctl history document' and 'dtctl restore document':
+
+    dtctl apply -f doc.yaml --create-snapshot
+    dtctl apply -f doc.yaml --create-snapshot --snapshot-description "before Q3 rework"
+
+  The flag applies to documents only and is a no-op when the document is created
+  rather than updated. The API keeps at most 50 snapshots per document and rejects
+  more than 5 snapshots per document per minute, so avoid it in tight apply loops.
 
 Array input (bulk apply):
   Files containing an array of resources (e.g., from 'dtctl get settings --schema ...
@@ -150,9 +164,15 @@ resources in sync with their file definitions.
 		writeID, _ := cmd.Flags().GetBool("write-id")
 		docType, _ := cmd.Flags().GetString("type")
 		labels, _ := cmd.Flags().GetStringArray("label")
+		createSnapshot, _ := cmd.Flags().GetBool("create-snapshot")
+		snapshotDescription, _ := cmd.Flags().GetString("snapshot-description")
 		shareEnvironment, _ := cmd.Flags().GetString("share-environment")
 
 		if err := validateShareEnvironmentValue(shareEnvironment); err != nil {
+			return err
+		}
+
+		if err := validateSnapshotFlags(cmd); err != nil {
 			return err
 		}
 
@@ -219,13 +239,15 @@ resources in sync with their file definitions.
 
 		// Apply the resource
 		opts := apply.ApplyOptions{
-			TemplateVars: templateVars,
-			DryRun:       dryRun,
-			ShowDiff:     showDiff,
-			OverrideID:   overrideID,
-			WriteID:      writeID,
-			Type:         docType,
-			Labels:       labels,
+			TemplateVars:        templateVars,
+			DryRun:              dryRun,
+			ShowDiff:            showDiff,
+			OverrideID:          overrideID,
+			WriteID:             writeID,
+			Type:                docType,
+			Labels:              labels,
+			CreateSnapshot:      createSnapshot,
+			SnapshotDescription: snapshotDescription,
 		}
 
 		results, applyErr := applier.Apply(fileData, opts)
@@ -303,6 +325,8 @@ func init() {
 	applyCmd.Flags().Bool("write-id", false, "write the created resource ID back into the source file for idempotent future applies")
 	applyCmd.Flags().String("type", "", "document type (e.g. launchpad, acme:config); forces the file to be applied as a document of this type")
 	applyCmd.Flags().StringArray("label", []string{}, "document classification label (repeatable); replaces the document's labels, overriding any in the payload (labels cannot be cleared, only replaced)")
+	applyCmd.Flags().Bool("create-snapshot", false, "snapshot the document's current state before updating it, so the previous version stays available via 'dtctl history'/'dtctl restore' (documents only)")
+	applyCmd.Flags().String("snapshot-description", "", "description for the snapshot created by --create-snapshot (max 128 characters)")
 	applyCmd.Flags().String("share-environment", "", "share the applied notebook/dashboard with everyone in the environment (values: 'read' or 'read-write'; bare --share-environment defaults to 'read')")
 	applyCmd.Flags().Lookup("share-environment").NoOptDefVal = "read"
 
@@ -358,4 +382,10 @@ func ensureEnvironmentShareForResults(c *client.Client, results []apply.ApplyRes
 		ids = append(ids, e.Error())
 	}
 	return fmt.Errorf("%d documents failed to share: %s", len(errs), strings.Join(ids, "; "))
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(applyCmd)
 }

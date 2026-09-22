@@ -7,6 +7,7 @@ import (
 
 	"github.com/dynatrace-oss/dtctl/pkg/resources/copilot"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/vfs"
 )
 
@@ -284,6 +285,9 @@ func init() {
 	execCopilotCmd.Flags().StringP("file", "f", "", "read message from file")
 	execCopilotCmd.Flags().Bool("stream", false, "stream response in real-time")
 	execCopilotCmd.Flags().String("context", "", "additional context for the conversation")
+	// Renamed or removed in 1.0 because it hides a global flag
+	// (contrib breaking-changes/unshadow-global-flags.md).
+	stability.MarkFlag(execCopilotCmd, "context", stability.Experimental, pre10Since)
 	execCopilotCmd.Flags().String("instruction", "", "formatting instructions (e.g., 'Answer in bullet points')")
 	execCopilotCmd.Flags().Bool("no-docs", false, "disable Dynatrace documentation retrieval")
 
@@ -296,4 +300,13 @@ func init() {
 	// CoPilot document-search flags
 	execCopilotDocSearchCmd.Flags().StringSlice("collections", []string{}, "document collections to search (e.g., notebooks,dashboards)")
 	execCopilotDocSearchCmd.Flags().StringSlice("exclude", []string{}, "document IDs to exclude from results")
+}
+
+// Declared stable: the invocation and output contract of these commands is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(execCopilotCmd)
+	stability.MarkStable(execCopilotDocSearchCmd)
+	stability.MarkStable(execCopilotDql2NlCmd)
+	stability.MarkStable(execCopilotNl2DqlCmd)
 }

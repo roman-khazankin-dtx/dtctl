@@ -12,7 +12,7 @@ This document tracks the current implementation status of dtctl. For future plan
 
 ### Core Infrastructure
 - [x] Go module with Cobra CLI framework
-- [x] **SDK module** (`sdk/`): Separate Go module (`github.com/dynatrace-oss/dtctl/sdk`) with typed API wrappers for 15 Dynatrace APIs, shared HTTP client, auth, URL handling, and credential storage. CLI resource handlers delegate to SDK.
+- [x] **SDK module** (`sdk/`): Separate Go module (`github.com/dynatrace-oss/dtctl/sdk`) with typed API wrappers for 24 Dynatrace APIs, shared HTTP client, auth, URL handling, and credential storage. CLI resource handlers delegate to SDK.
 - [x] Configuration management (YAML config, contexts, token storage)
 - [x] Context safety levels (readonly, readwrite-mine, readwrite-all, dangerously-unrestricted)
 - [x] HTTP client with retry, rate limiting, error handling
@@ -56,10 +56,11 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] `ctx` - Quick context management (list, switch, describe, set, delete)
 - [x] `doctor` - Health check (config, context, token, connectivity, auth)
 - [x] `inventory` - Environment data inventory: fetchable data objects, buckets, entity census, capabilities present/absent with evidence; customizable via `--definitions`
+- [x] `inventory arrivals --scope <dql-filter>` - Onboarding verification: per-signal ingest state (live/stale/empty/no-data/n-a/absent/unknown) with counts and last-seen for one scope over a window (`--since`, default 15m); `--require` turns it into a CI gate (exit 10 not live, 11 no verdict) (see `docs/dev/ONBOARDING_VERIFICATION_DESIGN.md`)
 - [x] `commands` - Machine-readable command catalog (JSON/YAML, `--brief`, resource filter, `howto` subcommand)
 - [x] `skills` - AI agent skill file management (install, uninstall, status for Claude, Codex, Copilot, Cursor, Kiro, Junie, OpenCode, OpenClaw; cross-client via `--cross-client`)
 - [x] `plugin` - kubectl-style exec plugins: unknown commands dispatch to `dtctl-<name>` binaries on PATH (`plugin list`, catalog integration; see [PLUGIN_CONVENTIONS.md](PLUGIN_CONVENTIONS.md))
-- [x] `serve` (experimental, gated behind `DTCTL_EXPERIMENTAL_SERVE`) - Run dtctl as a server instead of a one-shot CLI, one subcommand per protocol: `serve http` (`POST /v1/execute`, `GET /healthz`, `--addr` default `127.0.0.1:7211`). Reference implementation over `pkg/engine`; see [SERVICE_ENGINE_DESIGN.md](SERVICE_ENGINE_DESIGN.md)
+- [x] `serve` (development-tier, opt in with `dtctl config set development.serve on`) - Run dtctl as a server instead of a one-shot CLI, one subcommand per protocol: `serve http` (`POST /v1/execute`, `GET /healthz`, `--addr` default `127.0.0.1:7211`). Reference implementation over `pkg/engine`; see [SERVICE_ENGINE_DESIGN.md](SERVICE_ENGINE_DESIGN.md)
 
 ### Resources
 
@@ -69,6 +70,7 @@ This document tracks the current implementation status of dtctl. For future plan
 |----------|-----|----------|--------|--------|------|-------|
 | workflow | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | execution | ✅ | ✅ | - | - | - | - |
+| scheduling-rule | ✅ | ✅ | ✅ | ✅ | - | ✅ |
 | document | ✅ | ✅ | ✅ | ✅ | ✅ | - |
 | dashboard | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | notebook | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -85,12 +87,15 @@ This document tracks the current implementation status of dtctl. For future plan
 | analyzer | ✅ | ✅ | - | - | - | - |
 | copilot | ✅ | - | - | - | - | - |
 | lookup | ✅ | ✅ | ✅ | ✅ | - | ✅ |
-| extension | ✅ | ✅ | ✅ | - | - | - |
+| extension | ✅ | ✅ | ✅ | - | ✅ | - |
 | extension-config | ✅ | ✅ | - | - | - | ✅ |
 | intent | ✅ | ✅ | - | - | - | - |
 | segment | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | anomaly-detector | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | api | ✅ | ✅ | - | - | - | - |
+| environment | ✅ | ✅ | - | - | - | - |
+| license | ✅ | ✅ | - | - | - | - |
+| license-settings | ✅ | - | - | - | - | - |
 
 #### Account Management
 
@@ -368,7 +373,7 @@ This document tracks the current implementation status of dtctl. For future plan
 ## Future Planned Features 🔮
 
 See [FUTURE_FEATURES.md](FUTURE_FEATURES.md) for the complete implementation plan including:
-- Platform Management (environment info, license)
+- ~~Platform Management (environment info, license)~~ → Implemented (`environment`, `license`, `license-settings`)
 - State Management for Apps
 - ~~Grail Filter Segments~~ → Implemented (see `segment` resource)
 - Grail Fieldsets

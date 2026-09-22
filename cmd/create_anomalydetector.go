@@ -1,13 +1,17 @@
 package cmd
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
+	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/anomalydetector"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/util/format"
 	"github.com/dynatrace-oss/dtctl/pkg/util/template"
 	"github.com/dynatrace-oss/dtctl/pkg/vfs"
@@ -71,11 +75,7 @@ Examples:
 
 		// Handle dry-run
 		if dryRun {
-			output.PrintInfo("Dry run: would create anomaly detector")
-			output.PrintInfo("---")
-			output.PrintInfo("%s", string(jsonData))
-			output.PrintInfo("---")
-			return nil
+			return dryRunCreateAnomalyDetector(jsonData)
 		}
 
 		_, c, err := SetupWithSafety(safety.OperationCreate)
@@ -83,7 +83,7 @@ Examples:
 			return err
 		}
 
-		handler := anomalydetector.NewHandler(c)
+		handler := anomalydetector.NewHandler(c).WithDefaultActor(currentActor(c))
 
 		result, err := handler.Create(jsonData)
 		if err != nil {
@@ -101,8 +101,75 @@ Examples:
 	},
 }
 
+// currentActor resolves the identity used for executionSettings.actor when a
+// definition omits it. An unresolvable identity is not fatal: the environment
+// may accept the detector without an actor, and the resulting API error names
+// the field if it does not.
+func currentActor(c *client.Client) string {
+	actor, err := c.CurrentUserID()
+	if err != nil {
+		return ""
+	}
+	return actor
+}
+
+// dryRunCreateAnomalyDetector prints the payload dtctl would send and reports
+// the verdict of server-side schema validation. Echoing the input back
+// unchecked reported success for definitions the live call rejects (issue #369).
+func dryRunCreateAnomalyDetector(jsonData []byte) error {
+	_, c, err := SetupClient()
+	if err != nil {
+		// No usable environment: fall back to local validation only.
+		body, prepErr := anomalydetector.NewHandler(nil).PrepareCreateBody(jsonData)
+		if prepErr != nil {
+			return prepErr
+		}
+		printDryRunAnomalyDetector(body)
+		output.PrintWarning("schema validation skipped: %v", err)
+		return nil
+	}
+
+	handler := anomalydetector.NewHandler(c).WithDefaultActor(currentActor(c))
+	body, err := handler.PrepareCreateBody(jsonData)
+	if err != nil {
+		return err
+	}
+	printDryRunAnomalyDetector(body)
+
+	var unavailable *anomalydetector.ValidationUnavailableError
+	switch err := handler.ValidateCreate(jsonData); {
+	case err == nil:
+		output.PrintSuccess("Schema validation passed")
+	case errors.As(err, &unavailable):
+		output.PrintWarning("schema validation skipped: %v", unavailable.Err)
+	default:
+		return err
+	}
+	return nil
+}
+
+// printDryRunAnomalyDetector shows the request body, including the schema
+// defaults dtctl fills in, so the dry run reflects what would actually be sent.
+func printDryRunAnomalyDetector(body map[string]any) {
+	output.PrintInfo("Dry run: would create anomaly detector")
+	output.PrintInfo("---")
+	rendered, err := json.Marshal(body)
+	if err != nil {
+		output.PrintInfo("%v", body)
+	} else {
+		output.PrintInfo("%s", rendered)
+	}
+	output.PrintInfo("---")
+}
+
 func init() {
 	createAnomalyDetectorCmd.Flags().StringP("file", "f", "", "file containing anomaly detector definition (required)")
 	createAnomalyDetectorCmd.Flags().StringArray("set", []string{}, "set template variable (key=value)")
 	_ = createAnomalyDetectorCmd.MarkFlagRequired("file")
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(createAnomalyDetectorCmd)
 }

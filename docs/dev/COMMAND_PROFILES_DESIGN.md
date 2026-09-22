@@ -9,7 +9,7 @@
 > resolution live in `cmd/profile.go` (wired into `execute()` in `cmd/root.go`).
 > Context binding is in `cmd/ctx.go` / `cmd/config.go`; catalog metadata in
 > `pkg/commands/listing.go` + `cmd/commands.go`. User docs:
-> `docs/site/_docs/command-profiles.md`. Telemetry (open question 1) is deferred.
+> `docs/CONFIGURATION.md` (Command Profiles). Telemetry (open question 1) is deferred.
 
 ## Overview
 
@@ -471,3 +471,6 @@ command group can be added without breaking the schema above.
 5. **Catalog metadata + `--agent` envelope** -- surface `profile` + `safety_level`.
 6. **Docs** -- user-facing page under `docs/site/_docs/`, cross-linked with
    `context-safety-levels.md` and `ai-agent-mode.md`.
+   (As shipped: the page is the "Command Profiles" section of
+   [../CONFIGURATION.md](../CONFIGURATION.md#command-profiles) -- `docs/site/` is
+   retired and holds only redirect stubs.)

@@ -10,6 +10,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/gcpconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/gcpmonitoringconfig"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 var (
@@ -20,6 +21,7 @@ var (
 	createGCPMonitoringConfigCredentials       string
 	createGCPMonitoringConfigLocationFiltering string
 	createGCPMonitoringConfigFeatureSets       string
+	createGCPMonitoringConfigCentral           bool
 )
 
 var createGCPConnectionCmd = &cobra.Command{
@@ -55,6 +57,14 @@ Examples:
 				ServiceAccountID: createGCPConnectionServiceAccountID,
 				Consumers:        []string{"SVC:com.dynatrace.da"},
 			},
+		}
+
+		if dryRun {
+			return newDryRunReport(cmd).
+				Linef("Dry run: would create GCP connection").
+				Field("Name", "%s", createGCPConnectionName).
+				Field("Service account", "%s", createGCPConnectionServiceAccountID).
+				Print()
 		}
 
 		created, err := handler.Create(gcpconnection.GCPConnectionCreate{Value: value})
@@ -178,32 +188,23 @@ Examples:
 			return fmt.Errorf("failed to determine extension version: %w", err)
 		}
 
-		payload := gcpmonitoringconfig.GCPMonitoringConfig{
-			Scope: "integration-gcp",
-			Value: gcpmonitoringconfig.Value{
-				Enabled:     false,
-				Description: createGCPMonitoringConfigName,
-				Version:     version,
-				GoogleCloud: gcpmonitoringconfig.GoogleCloudConfig{
-					Credentials:                []gcpmonitoringconfig.Credential{credential},
-					LocationFiltering:          locations,
-					ProjectFiltering:           []string{},
-					FolderFiltering:            []string{},
-					TagFiltering:               []gcpmonitoringconfig.TagFilter{},
-					LabelFiltering:             []gcpmonitoringconfig.TagFilter{},
-					TagEnrichment:              []string{},
-					LabelEnrichment:            []string{},
-					ObservabilityScopesEnabled: false,
-					SmartscapeConfiguration:    gcpmonitoringconfig.FlagConfig{Enabled: true},
-					Resources:                  []gcpmonitoringconfig.MetricSource{},
-				},
-				FeatureSets: featureSets,
-			},
-		}
+		payload := buildGCPMonitoringConfig(
+			createGCPMonitoringConfigName, version, credential, locations, featureSets,
+			centralEnrichmentIntent(cmd, createGCPMonitoringConfigCentral))
 
 		body, err := json.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("failed to prepare request payload: %w", err)
+		}
+
+		if dryRun {
+			return newDryRunReport(cmd).
+				Linef("Dry run: would create GCP monitoring config (disabled)").
+				Field("Name", "%s", createGCPMonitoringConfigName).
+				Field("Version", "%s", version).
+				Field("Locations", "%d", len(locations)).
+				Field("Feature sets", "%d", len(featureSets)).
+				Print()
 		}
 
 		created, err := monitoringHandler.Create(body)
@@ -217,6 +218,33 @@ Examples:
 	},
 }
 
+func buildGCPMonitoringConfig(name, version string, credential gcpmonitoringconfig.Credential,
+	locations, featureSets []string, central *bool) gcpmonitoringconfig.GCPMonitoringConfig {
+	return gcpmonitoringconfig.GCPMonitoringConfig{
+		Scope: "integration-gcp",
+		Value: gcpmonitoringconfig.Value{
+			Enabled:     false,
+			Description: name,
+			Version:     version,
+			GoogleCloud: gcpmonitoringconfig.GoogleCloudConfig{
+				UseIngestEnrichmentConfig:  central,
+				Credentials:                []gcpmonitoringconfig.Credential{credential},
+				LocationFiltering:          locations,
+				ProjectFiltering:           []string{},
+				FolderFiltering:            []string{},
+				TagFiltering:               []gcpmonitoringconfig.TagFilter{},
+				LabelFiltering:             []gcpmonitoringconfig.TagFilter{},
+				TagEnrichment:              []string{},
+				LabelEnrichment:            []string{},
+				ObservabilityScopesEnabled: false,
+				SmartscapeConfiguration:    gcpmonitoringconfig.FlagConfig{Enabled: true},
+				Resources:                  []gcpmonitoringconfig.MetricSource{},
+			},
+			FeatureSets: featureSets,
+		},
+	}
+}
+
 func init() {
 	createGCPProviderCmd.AddCommand(createGCPConnectionCmd)
 	createGCPProviderCmd.AddCommand(createGCPMonitoringConfigCmd)
@@ -224,12 +252,29 @@ func init() {
 	createGCPConnectionCmd.Flags().StringVar(&createGCPConnectionName, "name", "", "GCP connection name (required)")
 	createGCPConnectionCmd.Flags().StringVar(&createGCPConnectionServiceAccountID, "serviceAccountId", "", "Customer service account email (optional; can be set later with update)")
 	createGCPConnectionCmd.Flags().StringVar(&createGCPConnectionServiceAccountID, "serviceaccountid", "", "Alias for --serviceAccountId")
+	// Renamed to kebab-case in 1.0 (contrib breaking-changes/cloud-flags-kebab-case.md);
+	// the spelling aliases are removed outright.
+	stability.MarkFlag(createGCPConnectionCmd, "serviceAccountId", stability.Experimental, pre10Since)
+	stability.MarkFlag(createGCPConnectionCmd, "serviceaccountid", stability.Experimental, pre10Since)
 
 	createGCPMonitoringConfigCmd.Flags().StringVar(&createGCPMonitoringConfigName, "name", "", "Monitoring config name/description (required)")
 	createGCPMonitoringConfigCmd.Flags().StringVar(&createGCPMonitoringConfigCredentials, "credentials", "", "GCP connection name or ID (required)")
 	createGCPMonitoringConfigCmd.Flags().StringVar(&createGCPMonitoringConfigLocationFiltering, "locationFiltering", "", "Comma-separated locations (default: all from schema)")
 	createGCPMonitoringConfigCmd.Flags().StringVar(&createGCPMonitoringConfigFeatureSets, "featureSets", "", "Comma-separated feature sets (default: all *_essential from schema)")
 	createGCPMonitoringConfigCmd.Flags().StringVar(&createGCPMonitoringConfigFeatureSets, "featuresets", "", "Alias for --featureSets")
+	// Renamed to kebab-case in 1.0 (contrib breaking-changes/cloud-flags-kebab-case.md);
+	// the spelling aliases are removed outright.
+	stability.MarkFlag(createGCPMonitoringConfigCmd, "locationFiltering", stability.Experimental, pre10Since)
+	stability.MarkFlag(createGCPMonitoringConfigCmd, "featureSets", stability.Experimental, pre10Since)
+	stability.MarkFlag(createGCPMonitoringConfigCmd, "featuresets", stability.Experimental, pre10Since)
+	addCentralEnrichmentFlag(createGCPMonitoringConfigCmd, &createGCPMonitoringConfigCentral)
 	_ = createGCPMonitoringConfigCmd.MarkFlagRequired("name")
 	_ = createGCPMonitoringConfigCmd.MarkFlagRequired("credentials")
+}
+
+// Declared stable: the invocation and output contract of these commands is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(createGCPConnectionCmd)
+	stability.MarkStable(createGCPMonitoringConfigCmd)
 }

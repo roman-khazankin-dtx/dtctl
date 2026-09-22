@@ -28,8 +28,10 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/iam"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/matcherlqltodql"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/matcherverify"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/platform"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/platformtoken"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/previewprocessor"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/schedulingrule"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/segment"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/settings"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/slo"
@@ -1516,6 +1518,24 @@ func describeGCPMonitoringConfigFixture() gcpmonitoringconfig.GCPMonitoringConfi
 						ServiceAccount: "sa-monitor@project-id.iam.gserviceaccount.com",
 					},
 				},
+				Resources: []gcpmonitoringconfig.MetricSource{
+					{
+						ResourceType:         "pubsub_topic",
+						AutoDiscoveryEnabled: false,
+						Metrics: []gcpmonitoringconfig.Metric{
+							{
+								Name:         "pubsub.googleapis.com/topic/send_request_count",
+								MetricLabels: []string{"response_class"},
+								Type:         "CUSTOM",
+							},
+						},
+					},
+					{
+						ResourceType:                   "gce_instance",
+						AutoDiscoveryEnabled:           true,
+						AutodiscoveryExcludeMetricType: []string{"compute.googleapis.com/instance/disk/*"},
+					},
+				},
 			},
 			FeatureSets: []string{"default"},
 		},
@@ -2972,6 +2992,229 @@ func TestGolden_DescribeAPIOperations(t *testing.T) {
 				t.Fatalf("PrintList failed: %v", err)
 			}
 			assertGolden(t, "describe/api-operations-"+name, buf.String())
+		})
+	}
+}
+
+func schedulingRuleFixtures() []schedulingrule.SchedulingRule {
+	return []schedulingrule.SchedulingRule{
+		{
+			ID:          "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+			Title:       "Business Hours",
+			RuleType:    "rrule",
+			Description: "Monday to Friday",
+			Version:     3,
+			RRule: map[string]interface{}{
+				"freq":      "WEEKLY",
+				"datestart": "2026-01-05",
+				"byday":     []interface{}{"MO", "TU", "WE", "TH", "FR"},
+			},
+			ModificationInfo: &schedulingrule.ModificationInfo{
+				CreatedBy:        "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+				CreatedTime:      "2026-01-05T08:00:00.000Z",
+				LastModifiedBy:   "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+				LastModifiedTime: "2026-02-11T10:30:00.000Z",
+			},
+		},
+		{
+			ID:               "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+			Title:            "Maintenance Window",
+			RuleType:         "grouping",
+			BusinessCalendar: "c3d4e5f6-a7b8-4c9d-8e0f-2a3b4c5d6e7f",
+			Version:          1,
+			GroupingRule: map[string]interface{}{
+				"combine": []interface{}{"a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"},
+			},
+			ModificationInfo: &schedulingrule.ModificationInfo{
+				CreatedBy:        "8b9c0d1e-2f3a-4b5c-9d0e-1f2a3b4c5d6e",
+				CreatedTime:      "2026-01-06T09:15:00.000Z",
+				LastModifiedBy:   "8b9c0d1e-2f3a-4b5c-9d0e-1f2a3b4c5d6e",
+				LastModifiedTime: "2026-01-06T09:15:00.000Z",
+			},
+		},
+	}
+}
+
+func TestGolden_GetSchedulingRules(t *testing.T) {
+	rules := schedulingRuleFixtures()
+
+	formats := map[string]string{
+		"table": "table",
+		"wide":  "wide",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList(rules); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "get/scheduling-rules-"+name, buf.String())
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Platform management: environment and license
+// ---------------------------------------------------------------------------
+
+func environmentFixture() platform.EnvironmentInfo {
+	return platform.EnvironmentInfo{
+		EnvironmentID: "abc12345",
+		Type:          "INTERNAL",
+		State:         "ACTIVE",
+		CreateTime:    time.Date(2025, 3, 13, 13, 11, 4, 0, time.UTC),
+		BlockTime:     time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+}
+
+func licenseFixture() platform.License {
+	return platform.License{
+		Trial:                false,
+		PlatformSubscription: true,
+	}
+}
+
+func TestGolden_GetEnvironment(t *testing.T) {
+	info := environmentFixture()
+
+	formats := map[string]string{
+		"table": "table",
+		"wide":  "wide",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(info); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "get/environment-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_GetLicense(t *testing.T) {
+	lic := licenseFixture()
+
+	formats := map[string]string{
+		"table": "table",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(lic); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "get/license-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_DescribeEnvironment(t *testing.T) {
+	info := environmentFixture()
+
+	formats := map[string]string{
+		"json": "json",
+		"yaml": "yaml",
+		"toon": "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(info); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "describe/environment-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_DescribeLicense(t *testing.T) {
+	lic := licenseFixture()
+
+	formats := map[string]string{
+		"json": "json",
+		"yaml": "yaml",
+		"toon": "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(lic); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "describe/license-"+name, buf.String())
+		})
+	}
+}
+
+func licenseSettingsFixture() []platform.LicenseSetting {
+	return []platform.LicenseSetting{
+		{Key: "AUTOMATION", Value: "true"},
+		{Key: "AI_FUNCTIONS", Value: "true"},
+		{Key: "LIVE_DEBUGGING", Value: "true"},
+		{Key: "CONTAINER_APPLICATION_MONITORING", Value: "false"},
+	}
+}
+
+func TestGolden_GetLicenseSettings(t *testing.T) {
+	settings := licenseSettingsFixture()
+
+	formats := map[string]string{
+		"table": "table",
+		"wide":  "wide",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList(settings); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "get/license-settings-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_GetLicenseSettings_Empty(t *testing.T) {
+	formats := map[string]string{
+		"table": "table",
+		"wide":  "wide",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList([]platform.LicenseSetting{}); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "empty/license-settings-"+name, buf.String())
 		})
 	}
 }

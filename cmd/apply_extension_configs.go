@@ -9,6 +9,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/apply"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/extension"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/util/format"
 	"github.com/dynatrace-oss/dtctl/pkg/util/template"
 	"github.com/dynatrace-oss/dtctl/pkg/vfs"
@@ -103,20 +104,26 @@ Examples:
 
 		// Handle dry-run
 		if dryRun {
+			report := newDryRunReport(cmd)
 			if isUpdate {
-				fmt.Println("Dry run: would update extension monitoring configuration")
-				fmt.Printf("Config ID: %s\n", configID)
+				report.
+					Linef("Dry run: would update extension monitoring configuration").
+					Field("Config ID", "%s", configID)
 			} else {
-				fmt.Println("Dry run: would create extension monitoring configuration")
+				report.Linef("Dry run: would create extension monitoring configuration")
 			}
-			fmt.Printf("Extension: %s\n", extensionName)
+			report.Field("Extension", "%s", extensionName)
 			if config.Scope != "" {
-				fmt.Printf("Scope:     %s\n", config.Scope)
+				// Padded to align with the line above it, so the field is recorded
+				// separately rather than reformatting what a human sees.
+				report.Linef("Scope:     %s", config.Scope).Detail("scope", "%s", config.Scope)
 			}
-			fmt.Println("---")
-			fmt.Println(string(jsonData))
-			fmt.Println("---")
-			return nil
+			return report.
+				Linef("---").
+				Linef("%s", string(jsonData)).
+				Linef("---").
+				Payload(jsonData).
+				Print()
 		}
 
 		// Determine if this is a create or update
@@ -172,4 +179,10 @@ func init() {
 	applyExtensionConfigCmd.Flags().String("scope", "", "scope for the monitoring configuration (e.g. HOST-1234, only for create)")
 	applyExtensionConfigCmd.Flags().StringArray("set", []string{}, "set template variable (key=value)")
 	_ = applyExtensionConfigCmd.MarkFlagRequired("file")
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(applyExtensionConfigCmd)
 }

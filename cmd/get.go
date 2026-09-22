@@ -10,12 +10,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dynatrace-oss/dtctl/pkg/output"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/watch"
 )
 
 var getBreakpointsCmd = &cobra.Command{
 	Use:   "breakpoints",
-	Short: "List all breakpoints in the current workspace (experimental)",
+	Short: "List all breakpoints in the current workspace",
 	RunE:  runGetBreakpoints,
 }
 
@@ -30,16 +31,17 @@ When called with a resource type and ID or name, retrieves that specific resourc
 Results can be filtered with --mine and formatted with -o (json, yaml, wide, chart).
 
 Supported resources:
-  workflows (wf)          dashboards (dash, db)     notebooks (nb)
-  slos                    slo-templates             settings
-  settings-schemas        buckets (bkt)             apps
-  functions               intents                   notifications
-  users                   groups                    edgeconnect (ec)
-  sdk-versions            analyzers                 copilot-skills
-  lookup-tables (lu)      trash                     workflow-executions (wfe)
-  wfe-task-result         extensions (ext)          extension-configs (extcfg)
-  documents (doc)         anomaly-detectors (ad)    hub-extensions
-  hub-extension-releases  apis
+  workflows (wf)              dashboards (dash, db)   notebooks (nb)
+  scheduling-rules (sr)       slos                    slo-templates
+  settings                    settings-schemas        buckets (bkt)
+  apps                        functions               intents
+  notifications               users                   groups
+  edgeconnect (ec)            sdk-versions            analyzers
+  copilot-skills              lookup-tables (lu)      trash
+  workflow-executions (wfe)   wfe-task-result         extensions (ext)
+  extension-configs (extcfg)  documents (doc)         anomaly-detectors (ad)
+  hub-extensions              hub-extension-releases  apis
+  environment                 license                 license-settings
 
 Use 'dtctl get <resource> --help' for resource-specific options.`,
 	Example: `  # List all workflows
@@ -67,6 +69,9 @@ func executeWithWatch(cmd *cobra.Command, fetcher watch.ResourceFetcher, printer
 	watchMode, _ := cmd.Flags().GetBool("watch")
 	if !watchMode {
 		return nil
+	}
+	if !caps.LongRunningStreams {
+		return &CapabilityError{Feature: "watch mode"}
 	}
 
 	interval, _ := cmd.Flags().GetDuration("interval")
@@ -97,7 +102,7 @@ func executeWithWatch(cmd *cobra.Command, fetcher watch.ResourceFetcher, printer
 		ShowInitial: !watchOnly,
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
@@ -122,6 +127,7 @@ func init() {
 
 	// Get subcommands (command definitions live in get_*.go files)
 	getCmd.AddCommand(getWorkflowsCmd)
+	getCmd.AddCommand(getSchedulingRulesCmd)
 	getCmd.AddCommand(getWorkflowExecutionsCmd)
 	getCmd.AddCommand(getWfeTaskResultCmd)
 	getCmd.AddCommand(getDashboardsCmd)
@@ -145,6 +151,7 @@ func init() {
 	getCmd.AddCommand(getSettingsCmd)
 	getCmd.AddCommand(getBreakpointsCmd)
 	getCmd.AddCommand(getSnapshotsCmd)
+	markLiveDebuggerExperimental(getBreakpointsCmd)
 	getCmd.AddCommand(getExtensionsCmd)
 	getCmd.AddCommand(getExtensionConfigsCmd)
 	getCmd.AddCommand(getDocumentsCmd)
@@ -153,4 +160,13 @@ func init() {
 	getCmd.AddCommand(getHubExtensionsCmd)
 	getCmd.AddCommand(getHubExtensionReleasesCmd)
 	getCmd.AddCommand(getAPIsCmd)
+	getCmd.AddCommand(getEnvironmentCmd)
+	getCmd.AddCommand(getLicenseCmd)
+	getCmd.AddCommand(getLicenseSettingsCmd)
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(getCmd)
 }

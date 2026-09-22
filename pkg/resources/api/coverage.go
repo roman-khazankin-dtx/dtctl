@@ -31,6 +31,7 @@ type Coverage struct {
 // rather than misdirecting a caller.
 var nativeCoverage = map[string]Coverage{
 	"/platform/automation/v1":                   {"workflow", "dtctl get workflows"},
+	"/platform/automation/v1/scheduling-rules":  {"scheduling-rule", "dtctl get scheduling-rules"},
 	"/platform/document/v1":                     {"document", "dtctl get documents"},
 	"/platform/slo/v1":                          {"slo", "dtctl get slos"},
 	"/platform/storage/query/v1":                {"query", "dtctl query"},
@@ -50,6 +51,15 @@ var nativeCoverage = map[string]Coverage{
 	"/platform/app-engine/function-executor/v1": {"function", "dtctl exec function"},
 	"/platform/app-engine/edge-connect/v1":      {"edgeconnect", "dtctl get edgeconnect"},
 	"/platform/dob/graphql":                     {"breakpoint", "dtctl get breakpoints"},
+	// Two map consumers, two granularities. NativeResourceFor does an exact lookup
+	// on the API catalog's published base path (/platform/management/v1) — the base
+	// path entry below makes --uncovered show this API as covered. NativeCoverageForPath
+	// uses longest-prefix, so the three per-endpoint entries always win over the base
+	// path and point exec api callers at the right command per sub-path.
+	"/platform/management/v1":                              {"environment", "dtctl get environment"},
+	"/platform/management/v1/environment":                  {"environment", "dtctl get environment"},
+	"/platform/management/v1/environment/license":          {"license", "dtctl get license"},
+	"/platform/management/v1/environment/license/settings": {"license-settings", "dtctl get license-settings"},
 }
 
 // NativeResourceFor returns the dtctl resource covering an API base path, or ""

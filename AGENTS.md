@@ -27,7 +27,7 @@ pkg/
   ├── exec/      # DQL query execution
   ├── vfs/       # Virtual-filesystem seam: user-supplied file paths resolve against the host disk (CLI) or per-request virtual files (engine)
   ├── engine/    # Embeddable service engine: one dtctl command line per request — multi-tenant session, virtual files, CLI-identical output
-  └── serve/     # `dtctl serve <protocol>` — reference servers over pkg/engine, one subcommand per protocol (`serve http` today; wired in main, outside the invocation lock). Experimental: registered only when DTCTL_EXPERIMENTAL_SERVE is set
+  └── serve/     # `dtctl serve <protocol>` — reference servers over pkg/engine, one subcommand per protocol (`serve http` today; wired in main, outside the invocation lock). Development-tier: registered only when opted in (`dtctl config set development.serve on`)
 sdk/            # Separate Go module (github.com/dynatrace-oss/dtctl/sdk)
   ├── session/     # The session layer (docs/dev/CONFIG_CONTRACT.md): config model + load/save, credential stores, OAuth flow/refresh + cross-process lock, client-from-context with parameterized User-Agent, safety semantics
   ├── api/         # Typed API wrappers (one package per Dynatrace API surface)
@@ -86,6 +86,163 @@ When adding a new AI agent to the skills system, update **all** of the following
 
 > Releases are automated by release-please from conventional commits — do not hand-edit a changelog. Just make sure the commit/PR title is a proper conventional commit (e.g. `feat: detect <agent> sessions`).
 
+## Stability Tiers
+
+Every command and flag carries a **stability tier** — what dtctl promises about
+its shape over time. It is a third axis, orthogonal to the safety level ("what
+may this command do?") and the command profile ("which commands exist here?").
+Full design: dtctl-contrib `dev/STABILITY_TIERS_DESIGN.md`. Reference and the
+current inventory: [docs/STABILITY.md](docs/STABILITY.md).
+
+| Tier | Promise | Visibility |
+|---|---|---|
+| `stable` | Additive-only; removal needs a deprecation cycle | normal |
+| `experimental` | May change or be removed in any release | registered, badged |
+| `development` | Unfinished, no guarantees *of any kind* | **not registered** until opted in |
+
+`development` covers the backend too: such a command usually targets an
+unreleased or feature-flagged API, so a 404/403/500 on an environment where the
+feature is not deployed is the tier working as intended, not a dtctl bug. dtctl
+does not translate those into "not available here".
+
+**Stable is explicit, never implied.** Every command declares its own tier where
+it is built — including the stable ones:
+
+```go
+stability.MarkStable(getWorkflowsCmd)                        // yes, this is required
+stability.Mark(ingestCmd, stability.Experimental, "0.39.0")  // since-version required
+stability.MarkFlag(queryCmd, "spill", stability.Experimental, "0.39.0")
+addDevelopmentCommand(rootCmd, accountCmd, "account")        // top-level, in cmd/
+cmd.AddDevelopmentCommand(serve.NewCommand(), "serve")       // wired from main
+```
+
+Stable used to be what a command got for saying nothing, which made the
+strongest promise dtctl makes the one nobody chose: a command shipped an
+additive-only contract because its author had not considered the question, and
+by the time anyone noticed, callers had built on it. So the build now refuses an
+undeclared command (`TestEveryCommandDeclaresItsTier`), and one that somehow
+reaches runtime undeclared resolves to `experimental` — never `stable`
+(`session.FallbackStabilityLevel`). The fallback is a backstop, not the answer;
+the answer is a declaration.
+
+Hidden commands are **not** exempt. Hiding removes a command from help, not from
+the tree: `dtctl exec dql` still runs, so it still carries a contract.
+
+**Pre-1.0, the tier carries the contract and the version number does not.**
+release-please runs with `bump-minor-pre-major`, so a break ships as a minor
+bump and semver's 0.x clause would let anything change at any time — which would
+make every `stable` badge worthless. dtctl carves the tier out of that policy:
+`stable` is additive-only from the release that declared it, whatever the version
+does next, and the only exit is a deprecation whose removal lands **at least two
+minor releases** later, so there is always a release that both warns and works.
+`stability.Lint` fails the build on a shorter window or an incomplete record.
+The policy is user-facing in the manifest header ("What `stable` promises before
+1.0"); `pkg/stability/manifest.go` is where you edit it.
+
+*Flags* are the deliberate exception — an unannotated flag inherits its
+command's tier. Requiring every flag on an experimental command to repeat the
+annotation would be pure noise, and a flag's silence cannot manufacture a
+promise the way a command's could, because inheritance can only ever weaken it.
+Only a flag making a *weaker* promise than its command declares itself. A flag
+may be weaker (an experimental flag on a stable command is how a new idea ships
+without a new command) but never stronger.
+
+After changing any of this, regenerate the checked-in manifest:
+
+```bash
+make stability-manifest   # writes docs/STABILITY.md; review the diff
+```
+
+`go test ./test/stability/` gates it. **A line that disappears from the stable
+surface is a broken promise, not a cleanup** — and because a drift gate only
+compares the manifest to the tree it was generated from, a PR that demotes a
+command *and* regenerates looks perfectly clean to it. `make stability-compat`
+closes that: it diffs the manifest against `origin/main` and refuses a stable
+entry that vanished (unless it was already deprecated there) or came back
+weaker. CI runs it on every PR.
+
+The manifest also lists the root command's persistent flags under a synthetic
+`(global)` group. A flag that appears nowhere in the file would be stable by
+omission — the one tier nobody chose — so `--agent`, `--dry-run`, `--jq` and the
+rest are on the record too, and the floor enforces them: it checks the
+persistent flags a command *inherits*, on the command the caller typed, since
+`rootCmd`'s `RunE` never runs for `dtctl get workflows --dry-run`.
+
+One consequence is worth knowing before you reach for `MarkFlag` on a global
+flag: cobra hands every subcommand the same `pflag.Flag` pointer the root
+declared, so a global flag has exactly one tier for the whole tree. There is no
+such thing as demoting `--dry-run` on `get` but not on `apply`.
+
+Enforcement is a five-stage pipeline that only ever *narrows* the surface, so
+"which axis wins" has a structural answer:
+
+1. registration — development opt-in (`applyDevelopmentRegistration`)
+2. profile mask — topical allowlist (`applyProfile`)
+3. stability floor — contract filter (`applyStabilityFloor`)
+4. deprecated surface — removal preview (`applyNoDeprecated`, opt-in)
+5. safety level — permission check (`pkg/safety`, per operation)
+
+Stage 4 is `DTCTL_NO_DEPRECATED=1`: dtctl behaves as if every deprecated command
+and flag had already been removed, so a CI job finds out it still depends on one
+while that is a fixable build rather than an outage. It is not a tier and not a
+floor — a deprecated command is stable in shape and satisfies any floor, it
+merely has a removal date, so no floor and no exception brings it back, only a
+migration. Durable per context (`no-deprecated: true`), per request
+(`engine.Request.NoDeprecated`), and the env var overrides the context in *both*
+directions so the run still mid-migration can opt back out. Errors carry their
+own agent code, `deprecated_surface`, rather than `stability_blocked`.
+
+No later stage can re-add what an earlier one removed. In particular a
+`stability-exceptions` entry cannot resurrect an unregistered development
+command. *Guard*: `go test ./cmd/ -run TestStability`
+
+### Flags an accepted breaking change already targets
+
+A flag can be correct, shipped, and still not `stable`: if dtctl-contrib's
+`breaking-changes/` folder has an accepted document that renames or removes it,
+the additive-only promise is one dtctl cannot keep. Those demotions live in
+`cmd/stability_pre_1_0.go` (the `pre10Since` constant and its rationale) and are
+enumerated with their driving document in
+`test/stability/pre_1_0_marks_test.go`. An accepted document counts even before
+its PR merges — demoting early costs a badge, demoting late means having shipped
+`stable` on a flag we already knew would break.
+
+The line to apply: **demote when 1.0 removes or renames the flag, or changes
+what a currently-valid invocation does. Do not demote when 1.0 only turns input
+dtctl already ignores into an error.** `--state RUNNING` means the same thing
+before and after stricter enum validation; only `--state RUNNIG` changes, from a
+silently wrong answer into a useful message. Withdrawing the stable contract to
+warn about a typo costs every correct caller and protects none of them. The
+spared rows carry their reason in `pre10RejectUnusableInputSpared`.
+
+A since-version is the one part of the manifest the release itself can falsify:
+`experimental since 0.39.0` is a claim about a version that does not exist yet.
+`TestSinceVersionsNameThisReleaseOrTheNextOne` holds every declaration to this
+release or the next one, so a differently-numbered release fails on
+release-please's own version-bump PR rather than after the tag exists.
+
+That list is a test and not a comment for a reason: `stability.MarkFlag` is a
+silent no-op when the flag it names does not exist, so renaming a flag in `cmd/`
+would drop its mark and quietly re-promise something 1.0 removes. When a
+breaking change lands, delete the flag's entry along with its mark — the test
+fails if the flag is gone but the entry stays.
+
+**Mark the flag, or the command?** Ask whether a usable stable invocation
+survives with the flag hidden. `create azure connection` keeps one (the
+`federatedIdentityCredential` path needs none of the renamed credential flags),
+so the flag mark is right. `update azure connection` does not: it requires one
+of `--directoryId`/`--applicationId`/`--clientSecret`, so at a stable floor
+`--help` offers only `--name` and every invocation fails demanding three flags
+the floor just hid. Demote the *command* there — a `stability_blocked` error
+that names the exception which would admit it beats a dead end. The split is
+pinned by `pre10DemotedCommands` / `pre10SurvivingCommands` in the same test.
+
+The other reason to mark the command is that the break lives in no flag at all:
+`exec workflow` starts waiting by default and `logs workflow-execution` reshapes
+its whole agent-mode output, so there is nothing narrower to annotate. Note that
+the manifest reports a flag's *effective* tier, so demoting a command shows up
+on every flag underneath it.
+
 ## Adding a Resource
 
 1. **SDK layer** (`sdk/api/<name>/`): Create typed API wrapper with CRUD functions using `httpclient.Client`. No file I/O, no display logic.
@@ -93,6 +250,9 @@ When adding a new AI agent to the skills system, update **all** of the following
 3. **Commands**: Add to `cmd/get.go`, `cmd/describe.go`, etc. Mutating verbs need a safety check; `-f`/`--file` flags go through `vfs`; no `os.Exit`, no ungated subprocess.
 4. Register in resolver
 5. Add tests: `sdk/api/<name>/*_test.go` (SDK unit tests) + `test/e2e/<name>_test.go` (E2E)
+5b. **Declare the stability tier** — every command, stable ones included; the
+   build fails on an undeclared one. Then run `make stability-manifest` (see
+   [Stability Tiers](#stability-tiers)).
 6. **Claim the coverage**: add the API's base path to `nativeCoverage` in `pkg/resources/api/coverage.go`, so `dtctl get apis` stops listing it as uncovered and `dtctl exec api` points callers at the new command. `Command` must be what a user would actually type (`dtctl query`, not `dtctl get query`). *Guard*: `go test ./cmd/ -run TestNativeCoverageNamesRealCommands`
 
 **SDK handler signature** (in `sdk/api/<name>/`):
@@ -101,6 +261,21 @@ func NewHandler(client *httpclient.Client) *Handler
 func (h *Handler) Get(id string) (*Resource, error)
 func (h *Handler) List(opts ListOptions) ([]Resource, error)
 ```
+
+**Every value interpolated into a request path goes through `url.PathEscape`.**
+
+```go
+Delete(fmt.Sprintf("/platform/slo/v1/slos/%s", url.PathEscape(id)))
+```
+
+An id arrives from a command line or an applied file. Spliced in raw, one
+containing `/`, `?` or `#` addresses a *different* resource and the request
+succeeds against it — `delete slo "<id>#x"` reported success while deleting
+`<id>`, because net/http drops the fragment before sending. `url.PathEscape`
+keeps `:` intact, so `%s:execute`-style action suffixes still work.
+`httpclient.CheckRequestPath` refuses an unescaped path at run time and
+`test/requestpath` catches the omission at build time, but neither is a reason
+to leave it out.
 
 **CLI handler** (in `pkg/resources/<name>/`): imports SDK types (often via type alias) and wraps with file I/O, display fields, etc.
 
@@ -493,6 +668,7 @@ if r.URL.Query().Get("nextPageKey") != "" {
 - **Architecture**: [docs/dev/ARCHITECTURE.md](docs/dev/ARCHITECTURE.md)
 - **Status**: [docs/dev/IMPLEMENTATION_STATUS.md](docs/dev/IMPLEMENTATION_STATUS.md)
 - **Embedding/service model**: [docs/dev/SERVICE_ENGINE_DESIGN.md](docs/dev/SERVICE_ENGINE_DESIGN.md)
+- **Stability tiers**: [docs/STABILITY.md](docs/STABILITY.md) (generated inventory + tier reference)
 - **API discovery + passthrough**: [docs/dev/GENERIC_API_ACCESS.md](docs/dev/GENERIC_API_ACCESS.md)
 - **Future Work**: [docs/dev/FUTURE_FEATURES.md](docs/dev/FUTURE_FEATURES.md)
 

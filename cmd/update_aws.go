@@ -11,6 +11,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/awsconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/awsmonitoringconfig"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 var (
@@ -75,6 +76,14 @@ Examples:
 		value.AwsRoleBasedAuthentication.RoleArn = updateAWSConnectionRoleArn
 		if len(value.AwsRoleBasedAuthentication.Consumers) == 0 {
 			value.AwsRoleBasedAuthentication.Consumers = []string{awsconnection.DefaultConsumer}
+		}
+
+		if dryRun {
+			return newDryRunReport(cmd).
+				Linef("Dry run: would update AWS connection %s", existing.ObjectID).
+				Detail("object_id", "%s", existing.ObjectID).
+				Field("Role ARN", "%s", updateAWSConnectionRoleArn).
+				Print()
 		}
 
 		updated, err := handler.Update(existing.ObjectID, value)
@@ -157,6 +166,15 @@ Examples:
 			return fmt.Errorf("failed to prepare request payload: %w", err)
 		}
 
+		if dryRun {
+			return newDryRunReport(cmd).
+				Linef("Dry run: would update AWS monitoring config %s", existing.ObjectID).
+				Detail("object_id", "%s", existing.ObjectID).
+				Field("Regions", "%s", strings.Join(value.Aws.RegionFiltering, ",")).
+				Field("Feature sets", "%d", len(value.FeatureSets)).
+				Print()
+		}
+
 		updated, err := handler.Update(existing.ObjectID, body)
 		if err != nil {
 			return err
@@ -173,8 +191,26 @@ func init() {
 
 	updateAWSConnectionCmd.Flags().StringVar(&updateAWSConnectionName, "name", "", "AWS connection name (used when ID argument is not provided)")
 	updateAWSConnectionCmd.Flags().StringVar(&updateAWSConnectionRoleArn, "roleArn", "", "AWS IAM role ARN (required)")
+	// Every path through this command needs a flag the rename takes away
+	// (--roleArn is required), so at a stable floor it has no usable
+	// invocation left. Marking the command says that plainly instead of
+	// hiding the flags and then failing on a "required" flag help no
+	// longer lists.
+	stability.Mark(updateAWSConnectionCmd, stability.Experimental, pre10Since)
+	// Renamed to kebab-case in 1.0 (contrib breaking-changes/cloud-flags-kebab-case.md);
+	// the spelling aliases are removed outright.
+	stability.MarkFlag(updateAWSConnectionCmd, "roleArn", stability.Experimental, pre10Since)
 
 	updateAWSMonitoringConfigCmd.Flags().StringVar(&updateAWSMonitoringConfigName, "name", "", "Monitoring config name/description (used when ID argument is not provided)")
 	updateAWSMonitoringConfigCmd.Flags().StringVar(&updateAWSMonitoringConfigRegions, "regions", "", "Comma-separated AWS regions")
 	updateAWSMonitoringConfigCmd.Flags().StringVar(&updateAWSMonitoringConfigFeatureSets, "featureSets", "", "Comma-separated feature sets")
+	// Renamed to kebab-case in 1.0 (contrib breaking-changes/cloud-flags-kebab-case.md);
+	// the spelling aliases are removed outright.
+	stability.MarkFlag(updateAWSMonitoringConfigCmd, "featureSets", stability.Experimental, pre10Since)
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(updateAWSMonitoringConfigCmd)
 }

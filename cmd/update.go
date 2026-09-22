@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 // updateCmd represents the update command.
@@ -23,6 +25,8 @@ from a YAML/JSON file (the update-only counterpart to 'create document').
 Available resources:
   document                Update an existing document of any type from a file
   breakpoint              Update breakpoint condition/enabled state or workspace filters
+  extension               Activate a specific, latest-installed, or Hub-latest version of an extension
+  extensions              Bulk-upgrade all installed extensions (requires --all)
   azure connection        Update Azure connection credentials
   azure monitoring        Update Azure monitoring configuration
   gcp connection          Update GCP connection credentials (Preview)
@@ -45,6 +49,8 @@ Available resources:
 }
 
 // updateSettingsHintCmd redirects users to 'apply' for file-based settings updates.
+// Hidden, and all it does is redirect to `apply`; that redirect is the
+// contract, and it is stable.
 var updateSettingsHintCmd = &cobra.Command{
 	Use:     "settings",
 	Aliases: []string{"setting"},
@@ -67,4 +73,14 @@ func init() {
 	rootCmd.AddCommand(updateCmd)
 	updateCmd.AddCommand(updateDocumentCmd)
 	updateCmd.AddCommand(updateSettingsHintCmd)
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(updateCmd)
+}
+
+func init() {
+	stability.MarkStable(updateSettingsHintCmd)
 }

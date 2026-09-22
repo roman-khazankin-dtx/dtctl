@@ -2,13 +2,20 @@ package azuremonitoringconfig
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 )
+
+// ErrNotFound reports that no monitoring configuration matches the name. It
+// separates "absent" from "the lookup itself failed", which apply needs to
+// decide between create and abort.
+var ErrNotFound = errors.New("monitoring config not found")
 
 const (
 	ExtensionName      = "com.dynatrace.extension.da-azure"
@@ -75,15 +82,17 @@ type Value struct {
 }
 
 type AzureConfig struct {
-	DeploymentScope           string            `json:"deploymentScope,omitempty"`
-	SubscriptionFilteringMode string            `json:"subscriptionFilteringMode,omitempty"`
-	Credentials               []Credential      `json:"credentials"`
-	LocationFiltering         []string          `json:"locationFiltering,omitempty"`
-	ConfigurationMode         string            `json:"configurationMode,omitempty"`
-	DeploymentMode            string            `json:"deploymentMode,omitempty"`
-	TagFiltering              []TagFilter       `json:"tagFiltering,omitempty"`
-	TagEnrichment             []string          `json:"tagEnrichment,omitempty"`
-	DtLabelsEnrichment        map[string]Labels `json:"dtLabelsEnrichment,omitempty"`
+	UseIngestEnrichmentConfig          *bool             `json:"useIngestEnrichmentConfig,omitempty" yaml:"useIngestEnrichmentConfig,omitempty"`
+	IngestEnrichmentMigrationProcessed *bool             `json:"ingestEnrichmentMigrationProcessed,omitempty" yaml:"ingestEnrichmentMigrationProcessed,omitempty"`
+	DeploymentScope                    string            `json:"deploymentScope,omitempty"`
+	SubscriptionFilteringMode          string            `json:"subscriptionFilteringMode,omitempty"`
+	Credentials                        []Credential      `json:"credentials"`
+	LocationFiltering                  []string          `json:"locationFiltering,omitempty"`
+	ConfigurationMode                  string            `json:"configurationMode,omitempty"`
+	DeploymentMode                     string            `json:"deploymentMode,omitempty"`
+	TagFiltering                       []TagFilter       `json:"tagFiltering,omitempty"`
+	TagEnrichment                      []string          `json:"tagEnrichment,omitempty"`
+	DtLabelsEnrichment                 map[string]Labels `json:"dtLabelsEnrichment,omitempty"`
 }
 
 type TagFilter struct {
@@ -173,7 +182,7 @@ func (h *Handler) ListAvailableLocations() ([]Location, error) {
 	}
 
 	var schema ExtensionSchemaResponse
-	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, latestVersion)
+	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, url.PathEscape(latestVersion))
 	resp, err := h.client.HTTP().R().SetResult(&schema).Get(schemaEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch extension schema: %w", err)
@@ -208,7 +217,7 @@ func (h *Handler) ListAvailableFeatureSets() ([]FeatureSet, error) {
 	}
 
 	var schema ExtensionSchemaResponse
-	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, latestVersion)
+	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, url.PathEscape(latestVersion))
 	resp, err := h.client.HTTP().R().SetResult(&schema).Get(schemaEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch extension schema: %w", err)
@@ -315,7 +324,7 @@ func (h *Handler) FindByName(name string) (*AzureMonitoringConfig, error) {
 			return &items[i], nil
 		}
 	}
-	return nil, fmt.Errorf("azure monitoring config with description %q not found", name)
+	return nil, fmt.Errorf("azure monitoring config with description %q: %w", name, ErrNotFound)
 }
 
 // Create creates a new Azure monitoring config

@@ -14,20 +14,22 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/resolver"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 // workflowFilter holds the workflow ID filter for executions
 var workflowFilter string
 
-// minWorkflowChunkSize is the smallest allowed --chunk-size for workflow listing.
+// minAutomationChunkSize is the smallest allowed --chunk-size for listing any
+// limit/offset-paginated Automation API resource (workflows, scheduling rules).
 // Smaller pages multiply the request count for no benefit and risk hammering the API.
-const minWorkflowChunkSize = 20
+const minAutomationChunkSize = 20
 
-// validateWorkflowChunkSize rejects tiny page sizes that fan a full listing out
-// into excessive API requests. 0 (single page) and >= minWorkflowChunkSize are allowed.
-func validateWorkflowChunkSize(chunk int64) error {
-	if chunk > 0 && chunk < minWorkflowChunkSize {
-		return fmt.Errorf("--chunk-size must be 0 or at least %d (got %d)", minWorkflowChunkSize, chunk)
+// validateAutomationChunkSize rejects tiny page sizes that fan a full listing out
+// into excessive API requests. 0 (single page) and >= minAutomationChunkSize are allowed.
+func validateAutomationChunkSize(chunk int64) error {
+	if chunk > 0 && chunk < minAutomationChunkSize {
+		return fmt.Errorf("--chunk-size must be 0 or at least %d (got %d)", minAutomationChunkSize, chunk)
 	}
 	return nil
 }
@@ -88,7 +90,7 @@ Examples:
 		limit, _ := cmd.Flags().GetInt64("limit")
 
 		chunk := GetChunkSize()
-		if err := validateWorkflowChunkSize(chunk); err != nil {
+		if err := validateAutomationChunkSize(chunk); err != nil {
 			return err
 		}
 
@@ -346,6 +348,10 @@ func init() {
 	getWorkflowsCmd.Flags().String("filter", "", "Search workflows by title")
 	getWorkflowsCmd.Flags().String("type", "", "Filter by workflow type: standard or simple")
 	getWorkflowsCmd.Flags().String("trigger", "", "Filter by trigger type: Manual, Schedule, Event")
+	// Removed in 1.0 — the server never applied it (contrib
+	// breaking-changes/reject-unusable-input.md). Note this is only the
+	// workflows filter; `get workflow-executions --trigger` does work and stays.
+	stability.MarkFlag(getWorkflowsCmd, "trigger", stability.Experimental, pre10Since)
 	getWorkflowsCmd.Flags().Int64("limit", 0, "Maximum number of workflows to return (0 = unlimited)")
 
 	deleteWorkflowCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
@@ -377,4 +383,12 @@ func parseExecTime(s string, endOfDay bool) (string, error) {
 		t = t.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 	}
 	return t.UTC().Format(time.RFC3339), nil
+}
+
+// Declared stable: the invocation and output contract of these commands is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(deleteWorkflowCmd)
+	stability.MarkStable(getWorkflowExecutionsCmd)
+	stability.MarkStable(getWorkflowsCmd)
 }

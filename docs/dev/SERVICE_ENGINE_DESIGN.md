@@ -1,7 +1,7 @@
 # dtctl as a Service — Engine Design
 
-**Status:** Implemented; `dtctl serve` is experimental and gated behind
-`DTCTL_EXPERIMENTAL_SERVE` (see [Maturity](#maturity))
+**Status:** Implemented; `dtctl serve` is a development-tier feature, registered
+only when opted in (see [Maturity](#maturity))
 **Created:** 2026-08-13
 **Audience:** anyone changing `cmd/`, adding a command, or reading a user-supplied file.
 
@@ -98,7 +98,7 @@ Consequences to internalize before "optimizing" this:
   dispatches `serve` before the command pipeline, and why `dtctl serve http`
   refuses to run when `cmd.RunActive()` reports an invocation in progress.
 
-### Restriction has four independent axes
+### Restriction has five independent axes
 
 Do not conflate these; each answers a different question.
 
@@ -106,12 +106,45 @@ Do not conflate these; each answers a different question.
 |---|---|---|---|
 | Safety level | What may this command *do* to the tenant? | `pkg/safety` checks | `safety_blocked` |
 | Profile | Which commands *exist* for this caller? | `applyProfile` mask | `profile_blocked` |
+| Stability floor | Which commands *carry a contract* here? | `pkg/stability` mask | `stability_blocked` |
 | Environment | Which commands *make sense* here at all? | `BlockedCommands` mask | `unsupported_in_service` |
 | Capability | Which *host abilities* may this process use? | `cmd.Capabilities` gates | `capability_disabled` |
 
-The masks compose — profile and environment both apply to a run. The
+The masks compose — profile, stability and environment all apply to a run. The
 environment mask additionally guards non-runnable parents, so a blocked
 `config` cannot answer with its own help text and exit 0.
+
+#### The stability floor defaults *stricter* in the engine
+
+`Request.MinStability` defaults to `stable`, not to the CLI's `experimental`
+(`cmd.SessionDefaultMinStability`). The middle tier exists so that a human — or
+an interactive agent showing the human a `[Experimental]` badge — can knowingly
+use surface that may change in any minor release. A request has nobody to show
+the badge to: it is unattended automation, usually against a dtctl version the
+caller did not pin. Defaulting it into the experimental tier would let a minor
+upgrade change a shape the caller's own API had already promised onward.
+
+Two per-request fields widen it, and the second is almost always the right one:
+
+- `MinStability: "experimental"` grants the whole tier, including commands and
+  flags that join it in a later release.
+- `StabilityExceptions: []string{"inventory", "query --decode-snapshots"}`
+  grants exactly what the host has tested. There is no environment variable for
+  exceptions, so this field is the only way to express them in engine mode.
+
+`development` is rejected as a floor value. That tier is gated at
+*registration* — a stage earlier than the floor — and a session offers no
+opt-in for it, so accepting the value would return an `experimental`-sized
+surface to a caller who believed it had asked for more.
+
+`DTCTL_MIN_STABILITY` and `DTCTL_DEVELOPMENT` are in `sessionScrubbedEnvVars`
+for the same reason `DTCTL_PROFILE` is: they decide which commands exist, and
+that is the request's decision, not the host process's. A host that exported
+either one for its own CLI use must not thereby reshape every tenant's surface.
+
+An embedded agent discovers its own floor from `dtctl commands`, which reports
+`min_stability` and omits everything below it — so a block reads as "not
+available to you here", not as "this command does not exist".
 
 ## Rules for contributors
 
@@ -310,33 +343,48 @@ both tags exist.
 `pkg/engine` is the stable half: a Go caller opts into it at compile time, and
 the isolation rules above are enforced by guard tests.
 
-`dtctl serve` is **experimental** and registered only when
-`DTCTL_EXPERIMENTAL_SERVE` is set (the `DTCTL_EXPERIMENTAL_ACCOUNT` convention;
-`serve.Experimental()` and the gate in `main`). Without it the command does not
-exist — no help entry, no catalog entry, an ordinary "unknown command". The gate
-comes off when the items below are settled, because each one changes what an
-operator can rely on:
+`dtctl serve` is **development-tier** (see [STABILITY.md](../STABILITY.md)) and
+registered only when opted into — `dtctl config set development.serve on` or
+`DTCTL_DEVELOPMENT=serve`; `serve.Enabled()` and the gate in `main`. Without it
+the command does not exist — no help entry, no catalog entry, an ordinary
+"unknown command". It graduates to a badged `experimental` command when the
+items below are settled, because each one changes what an operator can rely
+on:
 
-- **No per-request deadline.** A started execution cannot be interrupted, and it
-  holds the single invocation slot. One `wait` with a long timeout, or a `query`
-  against a slow environment, stalls every queued request behind it.
-- **No admission control.** Requests queue on the invocation mutex without a
-  bound; there is no "server busy" answer and no way to shed load.
-- **Unbounded commands are still reachable.** `query --live` never returns on
-  its own. Deciding whether the service surface excludes such commands (as it
-  excludes `inspect`) or the transport imposes deadlines is the open half of the
-  question below.
+- **Per-request deadline, with a caveat.** `engine.Limits.MaxDuration`
+  (`DefaultLimits`: 5 min) wraps the request in a `context.WithTimeout`
+  threaded into the command tree via `RunOptions.Context` /
+  `rootCmd.ExecuteContext`, and most commands cancel cooperatively via
+  `cmd.Context()`. But cancellation is opt-in per command body: one that never
+  checks its context, or issues an HTTP call on a context of its own, still
+  runs to completion and holds the single invocation slot regardless of the
+  budget. `cmd/query.go`'s DQL execution is the tracked exception today (see
+  its own comments); auditing the rest of the tree for the same gap is not
+  done.
+- **Admission control exists, coarsely.** `engine.Limits.MaxQueued`
+  (default 4) bounds how many requests may wait for the slot;
+  `engine.ErrTooManyQueued` is the "server busy" answer, mapped to HTTP 503 by
+  `serve http`. The bound is process-global (a package-level counter), not
+  per engine instance or caller, so two independent callers sharing a process
+  share one queue depth.
+- **Streaming commands are refused, not made safe.** `--watch` (`get`),
+  `--follow` (`logs`), and `--live` (`query`) are blocked outright via the
+  `LongRunningStreams` capability (`capability_disabled`) rather than
+  supported through a different response shape — they would need a streaming
+  transport, which `POST /v1/execute` (buffers the whole output) does not
+  offer. This closes off the "unbounded command reachable" gap for these
+  three flags specifically; it does not audit the full command tree for other
+  potentially-unbounded operations.
 - **Per-invocation tracing cost.** `tracing.Init`/shutdown runs per invocation
   with a 5s flush budget; in a long-lived server that belongs at process scope.
 
 ## Open questions
 
 - **Instance-per-request via WASM.** A spike measured 20–47 ms per-instance
-  overhead, which would remove the serialization constraint and give hard
-  per-request deadlines. Not pursued yet; the current model is
+  overhead, which would remove the serialization constraint and give hard,
+  host-enforced per-request deadlines (rather than the cooperative
+  `cmd.Context()` cancellation above). Not pursued yet; the current model is
   process/instance-level scaling.
-- **Cancellation.** The context gates the *start* of an execution only. Hard
-  deadlines need a process or WASM boundary.
-- **Streaming.** `POST /v1/execute` buffers the whole output. Long-running
-  commands (`--watch`, `logs -f`) are unavailable in the service surface; a
-  streaming endpoint would need a different response shape.
+- **Per-engine-instance admission state.** Moving `engineSlot`/`engineQueued`
+  off package globals and onto an engine value would let independent callers
+  (e.g. multiple tenants in one process) each get their own queue depth.

@@ -12,6 +12,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 	"github.com/dynatrace-oss/dtctl/pkg/diagnostic"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/version"
 )
 
@@ -116,7 +117,8 @@ func runDoctorChecksWithClient(httpClient *http.Client) []checkResult {
 		return results
 	}
 
-	safetyLevel := ctx.GetEffectiveSafetyLevel().String()
+	// Config-level: reports the clamped level a local config actually gets.
+	safetyLevel := cfg.GetEffectiveSafetyLevel().String()
 	results = append(results, checkResult{
 		Name:   "Current context",
 		Status: "ok",
@@ -346,4 +348,10 @@ func oauthSessionCheckResult(session *SessionStatus) checkResult {
 
 func init() {
 	rootCmd.AddCommand(doctorCmd)
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(doctorCmd)
 }

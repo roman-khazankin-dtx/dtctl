@@ -12,8 +12,23 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/document"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/resolver"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/util/format"
 )
+
+// editUpdateRequest builds the update request for an interactive edit. Snapshot
+// creation is opt-in: without --create-snapshot the edit overwrites the document
+// in place, matching the behavior of every other dtctl write path.
+func editUpdateRequest(cmd *cobra.Command, content []byte) document.UpdateRequest {
+	createSnapshot, _ := cmd.Flags().GetBool("create-snapshot")
+	snapshotDescription, _ := cmd.Flags().GetString("snapshot-description")
+	return document.UpdateRequest{
+		Content:             content,
+		ContentType:         "application/json",
+		CreateSnapshot:      createSnapshot,
+		SnapshotDescription: snapshotDescription,
+	}
+}
 
 // editDashboardCmd edits a dashboard
 var editDashboardCmd = &cobra.Command{
@@ -28,6 +43,9 @@ defaults to vim), and updated when you save and close the editor.
 By default, resources are edited in YAML format for better readability.
 Use --format=json to edit in JSON format.
 
+Saving overwrites the current content. Pass --create-snapshot to keep the
+pre-edit state as a snapshot, recoverable via 'dtctl history' and 'dtctl restore'.
+
 Examples:
   # Edit a dashboard in YAML (default)
   dtctl edit dashboard <dashboard-id>
@@ -35,6 +53,9 @@ Examples:
 
   # Edit a dashboard in JSON
   dtctl edit dashboard <dashboard-id> --format=json
+
+  # Keep the pre-edit content as a snapshot
+  dtctl edit dashboard <dashboard-id> --create-snapshot
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -158,7 +179,7 @@ Examples:
 		}
 
 		// Update the dashboard
-		result, err := handler.Update(dashboardID, metadata.Version, jsonData, "application/json")
+		result, err := handler.UpdateDocument(dashboardID, metadata.Version, editUpdateRequest(cmd, jsonData))
 		if err != nil {
 			return err
 		}
@@ -181,6 +202,9 @@ defaults to vim), and updated when you save and close the editor.
 By default, resources are edited in YAML format for better readability.
 Use --format=json to edit in JSON format.
 
+Saving overwrites the current content. Pass --create-snapshot to keep the
+pre-edit state as a snapshot, recoverable via 'dtctl history' and 'dtctl restore'.
+
 Examples:
   # Edit a notebook in YAML (default)
   dtctl edit notebook <notebook-id>
@@ -188,6 +212,9 @@ Examples:
 
   # Edit a notebook in JSON
   dtctl edit notebook <notebook-id> --format=json
+
+  # Keep the pre-edit content as a snapshot
+  dtctl edit notebook <notebook-id> --create-snapshot
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -307,7 +334,7 @@ Examples:
 		}
 
 		// Update the notebook
-		result, err := handler.Update(notebookID, metadata.Version, jsonData, "application/json")
+		result, err := handler.UpdateDocument(notebookID, metadata.Version, editUpdateRequest(cmd, jsonData))
 		if err != nil {
 			return err
 		}
@@ -332,6 +359,9 @@ defaults to vim), and updated when you save and close the editor.
 By default, resources are edited in YAML format for better readability.
 Use --format=json to edit in JSON format.
 
+Saving overwrites the current content. Pass --create-snapshot to keep the
+pre-edit state as a snapshot, recoverable via 'dtctl history' and 'dtctl restore'.
+
 Examples:
   # Edit a document in YAML (default)
   dtctl edit document <document-id>
@@ -339,6 +369,9 @@ Examples:
 
   # Edit a document in JSON
   dtctl edit document <document-id> --format=json
+
+  # Keep the pre-edit content as a snapshot
+  dtctl edit document <document-id> --create-snapshot
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -456,7 +489,7 @@ Examples:
 		}
 
 		// Update the document
-		result, err := handler.Update(documentID, metadata.Version, jsonData, "application/json")
+		result, err := handler.UpdateDocument(documentID, metadata.Version, editUpdateRequest(cmd, jsonData))
 		if err != nil {
 			return err
 		}
@@ -467,7 +500,20 @@ Examples:
 }
 
 func init() {
-	editDashboardCmd.Flags().StringP("format", "", "yaml", "edit format (yaml|json)")
-	editNotebookCmd.Flags().StringP("format", "", "yaml", "edit format (yaml|json)")
-	editDocumentCmd.Flags().StringP("format", "", "yaml", "edit format (yaml|json)")
+	for _, c := range []*cobra.Command{editDashboardCmd, editNotebookCmd, editDocumentCmd} {
+		c.Flags().StringP("format", "", "yaml", "edit format (yaml|json)")
+		c.Flags().Bool("create-snapshot", false, "snapshot the current content before saving the edit, so the previous version stays available via 'dtctl history'/'dtctl restore'")
+		c.Flags().String("snapshot-description", "", "description for the snapshot created by --create-snapshot (max 128 characters)")
+		// Reject an orphaned --snapshot-description before the editor opens,
+		// rather than after the user has already written their changes.
+		c.PreRunE = func(cmd *cobra.Command, _ []string) error { return validateSnapshotFlags(cmd) }
+	}
+}
+
+// Declared stable: the invocation and output contract of these commands is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(editDashboardCmd)
+	stability.MarkStable(editDocumentCmd)
+	stability.MarkStable(editNotebookCmd)
 }

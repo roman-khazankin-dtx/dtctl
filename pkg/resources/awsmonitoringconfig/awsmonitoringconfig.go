@@ -4,13 +4,20 @@ package awsmonitoringconfig
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 )
+
+// ErrNotFound reports that no monitoring configuration matches the name. It
+// separates "absent" from "the lookup itself failed", which apply needs to
+// decide between create and abort.
+var ErrNotFound = errors.New("monitoring config not found")
 
 const (
 	ExtensionName      = "com.dynatrace.extension.da-aws"
@@ -91,21 +98,23 @@ type Value struct {
 }
 
 type AWSConfig struct {
-	DeploymentRegion            string                    `json:"deploymentRegion,omitempty"`
-	Credentials                 []Credential              `json:"credentials"`
-	RegionFiltering             []string                  `json:"regionFiltering"`
-	TagFiltering                []TagFilter               `json:"tagFiltering"`
-	TagEnrichment               []string                  `json:"tagEnrichment"`
-	DtLabelsEnrichment          map[string]DtLabelMapping `json:"dtLabelsEnrichment,omitempty"`
-	SmartscapeConfiguration     FlagConfig                `json:"smartscapeConfiguration"`
-	MetricsConfiguration        RegionalFlagConfig        `json:"metricsConfiguration"`
-	CloudWatchLogsConfiguration RegionalFlagConfig        `json:"cloudWatchLogsConfiguration"`
-	Namespaces                  []CustomNamespace         `json:"namespaces"`
-	ConfigurationMode           string                    `json:"configurationMode,omitempty"`
-	DeploymentMode              string                    `json:"deploymentMode,omitempty"`
-	DeploymentScope             string                    `json:"deploymentScope,omitempty"`
-	ManualDeploymentStatus      string                    `json:"manualDeploymentStatus,omitempty"`
-	AutomatedDeploymentStatus   string                    `json:"automatedDeploymentStatus,omitempty"`
+	UseIngestEnrichmentConfig          *bool                     `json:"useIngestEnrichmentConfig,omitempty" yaml:"useIngestEnrichmentConfig,omitempty"`
+	IngestEnrichmentMigrationProcessed *bool                     `json:"ingestEnrichmentMigrationProcessed,omitempty" yaml:"ingestEnrichmentMigrationProcessed,omitempty"`
+	DeploymentRegion                   string                    `json:"deploymentRegion,omitempty"`
+	Credentials                        []Credential              `json:"credentials"`
+	RegionFiltering                    []string                  `json:"regionFiltering"`
+	TagFiltering                       []TagFilter               `json:"tagFiltering"`
+	TagEnrichment                      []string                  `json:"tagEnrichment"`
+	DtLabelsEnrichment                 map[string]DtLabelMapping `json:"dtLabelsEnrichment,omitempty"`
+	SmartscapeConfiguration            FlagConfig                `json:"smartscapeConfiguration"`
+	MetricsConfiguration               RegionalFlagConfig        `json:"metricsConfiguration"`
+	CloudWatchLogsConfiguration        RegionalFlagConfig        `json:"cloudWatchLogsConfiguration"`
+	Namespaces                         []CustomNamespace         `json:"namespaces"`
+	ConfigurationMode                  string                    `json:"configurationMode,omitempty"`
+	DeploymentMode                     string                    `json:"deploymentMode,omitempty"`
+	DeploymentScope                    string                    `json:"deploymentScope,omitempty"`
+	ManualDeploymentStatus             string                    `json:"manualDeploymentStatus,omitempty"`
+	AutomatedDeploymentStatus          string                    `json:"automatedDeploymentStatus,omitempty"`
 }
 
 type Credential struct {
@@ -285,7 +294,7 @@ func (h *Handler) fetchLatestSchema() (*ExtensionSchemaResponse, error) {
 		return nil, fmt.Errorf("failed to determine latest extension version: %w", err)
 	}
 	var schema ExtensionSchemaResponse
-	endpoint := fmt.Sprintf(ExtensionSchemaAPI, latest)
+	endpoint := fmt.Sprintf(ExtensionSchemaAPI, url.PathEscape(latest))
 	resp, err := h.client.HTTP().R().SetResult(&schema).Get(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch extension schema: %w", err)
@@ -367,7 +376,7 @@ func (h *Handler) FindByName(name string) (*AWSMonitoringConfig, error) {
 			return &items[i], nil
 		}
 	}
-	return nil, fmt.Errorf("AWS monitoring config with description %q not found", name)
+	return nil, fmt.Errorf("AWS monitoring config with description %q: %w", name, ErrNotFound)
 }
 
 func (h *Handler) Create(data []byte) (*AWSMonitoringConfig, error) {

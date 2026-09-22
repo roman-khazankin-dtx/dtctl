@@ -2,13 +2,20 @@ package gcpmonitoringconfig
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 )
+
+// ErrNotFound reports that no monitoring configuration matches the name. It
+// separates "absent" from "the lookup itself failed", which apply needs to
+// decide between create and abort.
+var ErrNotFound = errors.New("monitoring config not found")
 
 const (
 	ExtensionName      = "com.dynatrace.extension.da-gcp"
@@ -72,23 +79,32 @@ type Value struct {
 }
 
 type GoogleCloudConfig struct {
-	Credentials                []Credential   `json:"credentials"`
-	LocationFiltering          []string       `json:"locationFiltering,omitempty"`
-	ProjectFiltering           []string       `json:"projectFiltering,omitempty"`
-	FolderFiltering            []string       `json:"folderFiltering,omitempty"`
-	TagFiltering               []TagFilter    `json:"tagFiltering,omitempty"`
-	LabelFiltering             []TagFilter    `json:"labelFiltering,omitempty"`
-	TagEnrichment              []string       `json:"tagEnrichment,omitempty"`
-	LabelEnrichment            []string       `json:"labelEnrichment,omitempty"`
-	ObservabilityScopesEnabled bool           `json:"observabilityScopesEnabled,omitempty"`
-	SmartscapeConfiguration    FlagConfig     `json:"smartscapeConfiguration,omitempty"`
-	Resources                  []MetricSource `json:"resources,omitempty"`
+	UseIngestEnrichmentConfig          *bool                     `json:"useIngestEnrichmentConfig,omitempty" yaml:"useIngestEnrichmentConfig,omitempty"`
+	IngestEnrichmentMigrationProcessed *bool                     `json:"ingestEnrichmentMigrationProcessed,omitempty" yaml:"ingestEnrichmentMigrationProcessed,omitempty"`
+	Credentials                        []Credential              `json:"credentials"`
+	LocationFiltering                  []string                  `json:"locationFiltering,omitempty"`
+	ProjectFiltering                   []string                  `json:"projectFiltering,omitempty"`
+	FolderFiltering                    []string                  `json:"folderFiltering,omitempty"`
+	TagFiltering                       []TagFilter               `json:"tagFiltering,omitempty"`
+	LabelFiltering                     []TagFilter               `json:"labelFiltering,omitempty"`
+	TagEnrichment                      []string                  `json:"tagEnrichment,omitempty"`
+	LabelEnrichment                    []string                  `json:"labelEnrichment,omitempty"`
+	DtLabelsEnrichment                 map[string]DtLabelMapping `json:"dtLabelsEnrichment,omitempty" yaml:"dtLabelsEnrichment,omitempty"`
+	ObservabilityScopesEnabled         bool                      `json:"observabilityScopesEnabled,omitempty"`
+	SmartscapeConfiguration            FlagConfig                `json:"smartscapeConfiguration,omitempty"`
+	Resources                          []MetricSource            `json:"resources,omitempty"`
 }
 
 type TagFilter struct {
 	Key       string `json:"key"`
 	Value     string `json:"value"`
 	Condition string `json:"condition"`
+}
+
+type DtLabelMapping struct {
+	Literal  string `json:"literal,omitempty"`
+	TagKey   string `json:"tagKey,omitempty"`
+	LabelKey string `json:"labelKey,omitempty"`
 }
 
 type FlagConfig struct {
@@ -99,6 +115,15 @@ type MetricSource struct {
 	ResourceType                   string   `json:"resourceType"`
 	AutoDiscoveryEnabled           bool     `json:"autoDiscoveryEnabled"`
 	AutodiscoveryExcludeMetricType []string `json:"autodiscoveryExcludeMetricType,omitempty"`
+	Metrics                        []Metric `json:"metrics,omitempty"`
+}
+
+// Metric is a single Cloud Monitoring metric collected for a resource type,
+// used when auto-discovery is off or to add metrics beyond the recommended set.
+type Metric struct {
+	Name         string   `json:"name"`
+	MetricLabels []string `json:"metricLabels,omitempty"`
+	Type         string   `json:"type,omitempty"`
 }
 
 type Credential struct {
@@ -175,7 +200,7 @@ func (h *Handler) ListAvailableLocations() ([]Location, error) {
 	}
 
 	var schema ExtensionSchemaResponse
-	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, latestVersion)
+	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, url.PathEscape(latestVersion))
 	resp, err := h.client.HTTP().R().SetResult(&schema).Get(schemaEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch extension schema: %w", err)
@@ -209,7 +234,7 @@ func (h *Handler) ListAvailableFeatureSets() ([]FeatureSet, error) {
 	}
 
 	var schema ExtensionSchemaResponse
-	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, latestVersion)
+	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, url.PathEscape(latestVersion))
 	resp, err := h.client.HTTP().R().SetResult(&schema).Get(schemaEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch extension schema: %w", err)
@@ -312,7 +337,7 @@ func (h *Handler) FindByName(name string) (*GCPMonitoringConfig, error) {
 			return &items[i], nil
 		}
 	}
-	return nil, fmt.Errorf("GCP monitoring config with description %q not found", name)
+	return nil, fmt.Errorf("GCP monitoring config with description %q: %w", name, ErrNotFound)
 }
 
 func (h *Handler) Create(data []byte) (*GCPMonitoringConfig, error) {

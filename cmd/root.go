@@ -60,6 +60,15 @@ var (
 	tracingRootCtx context.Context
 )
 
+// cmdContext returns cmd.Context() if set, or context.Background() as a
+// fallback for test callers that invoke RunE without ExecuteContext.
+func cmdContext(cmd *cobra.Command) context.Context {
+	if ctx := cmd.Context(); ctx != nil {
+		return ctx
+	}
+	return context.Background()
+}
+
 // rootCmd represents the base command
 var rootCmd = &cobra.Command{
 	Use:           "dtctl",
@@ -107,6 +116,16 @@ func AddCommand(c *cobra.Command) {
 // excluded) and returns an exit code. Callers go through Run, which provides
 // serialization and the pristine-tree guarantee.
 func executeArgs(argv []string) int {
+	// --- Stage 1: development-feature registration ---
+	// Attach the development-tier commands this invocation opted into and
+	// detach the rest, before anything else walks the tree. Registration
+	// (rather than hiding) is what makes an un-opted-in development feature
+	// unreachable by accident: `dtctl <it>` is an unknown command like any
+	// other, and it is absent from help, completion and the catalog.
+	devEnabled, devSignpost := resolveDevelopmentFeatures(argv)
+	applyDevelopmentRegistration(devEnabled)
+	// --- End development-feature registration ---
+
 	// Setup enhanced error handling after all subcommands are registered
 	setupErrorHandlers(rootCmd)
 
@@ -135,6 +154,12 @@ func executeArgs(argv []string) int {
 			fmt.Fprintf(os.Stderr,
 				"warning: ignoring aliases and hooks from local config %q "+
 					"(honored only from the global config, --config, or DTCTL_CONFIG)\n",
+				cfg.LocalConfigPath())
+		}
+		if cfg.IgnoredEnvRefs() {
+			fmt.Fprintf(os.Stderr,
+				"warning: local config %q contains env-var references ($...) that were not expanded "+
+					"(use --config or DTCTL_CONFIG to use a trusted config with env-var expansion)\n",
 				cfg.LocalConfigPath())
 		}
 
@@ -184,6 +209,39 @@ func executeArgs(argv []string) int {
 	applyBlockedCommands(rootCmd, runBlocked)
 	// --- End blocked-command filter ---
 
+	// --- Stage 3: stability floor ---
+	// Mask every command and flag whose contract is weaker than the floor this
+	// context accepts, unless an exception names it. Runs after the profile and
+	// blocked-command masks so all three compose and none can widen what an
+	// earlier one narrowed. A misspelled exception is a hard error rather than
+	// a silent skip: it would otherwise tighten the surface and produce a
+	// confusing block much later.
+	policy, stabErr := resolveStabilityPolicy(spanArgs, devEnabled)
+	if stabErr != nil {
+		output.PrintHumanError("%s", stabErr)
+		return client.ExitUsageError
+	}
+	applyStabilityFloor(rootCmd, policy)
+	// Badge what survived, so a caller reading help is told the guarantee
+	// rather than left to infer it from the tier's name.
+	applyStabilityBadges(rootCmd)
+	// --- End stability floor ---
+
+	// --- Stage 5: deprecated surface ---
+	// Show the caller the world as it will be after the removal release, so a
+	// pipeline can find out it still depends on something scheduled to go
+	// while that is a build failure rather than an outage. Orthogonal to the
+	// floor -- a deprecated command is stable in shape, merely dated -- but
+	// implemented as another narrowing stage so it composes without any
+	// precedence rule. Last, because it is the only stage the caller turns on
+	// to *find* problems rather than to avoid them.
+	// surfaceConfig, not LoadConfig: this is a surface decision like the four
+	// stages above it, and must not depend on credentials resolving.
+	if surfaceConfig(spanArgs).NoDeprecated() {
+		applyNoDeprecated(rootCmd)
+	}
+	// --- End deprecated surface ---
+
 	// Initialise OpenTelemetry tracing. Done after alias resolution so that
 	// the span name reflects the actual command (not a pre-alias invocation).
 	// The root span covers the entire invocation; shutdown flushes buffered
@@ -206,7 +264,7 @@ func executeArgs(argv []string) int {
 		fmt.Fprintf(os.Stderr, "dtctl: tracing: %v (check OTEL_EXPORTER_OTLP_ENDPOINT or unset it to disable export)\n", tracingErr)
 	}
 
-	if err := rootCmd.Execute(); err != nil {
+	if err := rootCmd.ExecuteContext(runCtx); err != nil {
 		// silentExitError carries an exit code only (e.g. --check-scopes printed
 		// its verdict, diff found differences, wait timed out); set the status
 		// and return without re-printing.
@@ -234,7 +292,15 @@ func executeArgs(argv []string) int {
 			if code, handled := tryPluginDispatch(spanArgs); handled {
 				return code
 			}
-			err = enhanceCommandError(rootCmd, err)
+			// A disabled development feature explains itself only to a caller
+			// who has already demonstrated knowledge of the mechanism, and
+			// never in agent mode. Everyone else gets the ordinary unknown
+			// command answer — see developmentSignposting.
+			if devErr := developmentHint(errStr, devSignpost); devErr != nil {
+				err = devErr
+			} else {
+				err = enhanceCommandError(rootCmd, err)
+			}
 		}
 
 		// Enhance unknown flag errors with suggestions
@@ -268,7 +334,9 @@ func executeArgs(argv []string) int {
 		if !structuredError {
 			var maskedProfile *ProfileError
 			var maskedUnsupported *UnsupportedCommandError
-			if errors.As(err, &maskedProfile) || errors.As(err, &maskedUnsupported) {
+			var maskedStability *StabilityError
+			if errors.As(err, &maskedProfile) || errors.As(err, &maskedUnsupported) ||
+				errors.As(err, &maskedStability) {
 				structuredError = hasRawFlag(spanArgs, "--agent") ||
 					hasShortFlagLetter(spanArgs, 'A') ||
 					hasRawFlag(spanArgs, "--plain")
@@ -619,6 +687,45 @@ func errorToDetail(err error) *output.ErrorDetail {
 		}
 	}
 
+	// StabilityError — command or flag below the active stability floor. A third
+	// code alongside profile_blocked and safety_blocked, because the three are
+	// different axes and a caller resolves them differently: a topical surface
+	// change, a permission grant, and an accepted contract risk.
+	var stabilityErr *StabilityError
+	if errors.As(err, &stabilityErr) {
+		return &output.ErrorDetail{
+			Code:        "stability_blocked",
+			Message:     stabilityErr.Headline(),
+			Suggestions: stabilityErr.Suggestions(),
+		}
+	}
+
+	// DevelopmentError — an un-opted-in development feature was invoked by a
+	// caller who had already shown they know the mechanism. Never produced in
+	// agent mode (see developmentSignposting), so this case exists for the
+	// --plain structured path only.
+	// DeprecatedError — deprecated surface was used under DTCTL_NO_DEPRECATED.
+	// Its own code rather than stability_blocked: the caller's contract has not
+	// been weakened, it has a removal date, and the fix is a migration rather
+	// than an exception or a lower floor.
+	var deprecatedErr *DeprecatedError
+	if errors.As(err, &deprecatedErr) {
+		return &output.ErrorDetail{
+			Code:        "deprecated_surface",
+			Message:     deprecatedErr.Headline(),
+			Suggestions: deprecatedErr.Suggestions(),
+		}
+	}
+
+	var devErr *DevelopmentError
+	if errors.As(err, &devErr) {
+		return &output.ErrorDetail{
+			Code:        "development_disabled",
+			Message:     devErr.Headline(),
+			Suggestions: devErr.Suggestions(),
+		}
+	}
+
 	// UnsupportedCommandError — command removed from the surface by the
 	// embedding caller (e.g. host-oriented commands inside the service engine).
 	var unsupportedErr *UnsupportedCommandError
@@ -735,6 +842,18 @@ func errorToDetail(err error) *output.ErrorDetail {
 			Code:       "api_spec_unavailable",
 			Message:    specErr.Error(),
 			StatusCode: specErr.StatusCode,
+		}
+	}
+
+	// output.JQError — a --jq filter that addressed the wrong object shape. The
+	// stable code lets an agent tell "you asked wrongly" from "no data", which a
+	// null result could not.
+	var jqErr *output.JQError
+	if errors.As(err, &jqErr) {
+		return &output.ErrorDetail{
+			Code:        jqErr.Code,
+			Message:     jqErr.Message,
+			Suggestions: jqErr.Suggestions,
 		}
 	}
 
@@ -867,6 +986,24 @@ func isTokenRefreshError(err error) bool {
 		strings.Contains(msg, "token expired and refresh failed")
 }
 
+// isPermissionDenied reports whether err is a typed 403. Callers that fall back
+// from one lookup to another use it to stop: a denial is not an absence, and
+// reporting "not found" for a 403 both misleads the user and throws away the
+// permission diagnostics the handler attached.
+func isPermissionDenied(err error) bool {
+	var diagErr *diagnostic.Error
+	if errors.As(err, &diagErr) {
+		return diagErr.StatusCode == 403
+	}
+
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == 403
+	}
+
+	return false
+}
+
 // isURLRelatedError returns true if the error could plausibly be caused by
 // using the wrong environment URL (e.g., 403, 401, connectivity errors).
 func isURLRelatedError(err error) bool {
@@ -924,6 +1061,21 @@ func exitCodeForError(err error) int {
 
 	var unsupportedErr *UnsupportedCommandError
 	if errors.As(err, &unsupportedErr) {
+		return client.ExitUsageError
+	}
+
+	var stabilityErr *StabilityError
+	if errors.As(err, &stabilityErr) {
+		return client.ExitUsageError
+	}
+
+	var developmentErr *DevelopmentError
+	if errors.As(err, &developmentErr) {
+		return client.ExitUsageError
+	}
+
+	var deprecatedUse *DeprecatedError
+	if errors.As(err, &deprecatedUse) {
 		return client.ExitUsageError
 	}
 
@@ -1048,14 +1200,15 @@ func SetupWithSafetyAndPrinter(op safety.Operation) (*config.Config, *client.Cli
 	return cfg, c, NewPrinter(), nil
 }
 
-// NewSafetyChecker creates a new safety checker for the current context
+// NewSafetyChecker creates a new safety checker for the current context.
+// For auto-discovered local configs, the safety level is clamped to
+// min(local, global) so a rogue .dtctl.yaml cannot escalate past the global
+// guard (see Config.GetEffectiveSafetyLevel).
 func NewSafetyChecker(cfg *config.Config) (*safety.Checker, error) {
-	ctx, err := cfg.CurrentContextObj()
-	if err != nil {
+	if _, err := cfg.CurrentContextObj(); err != nil {
 		return nil, err
 	}
-
-	return safety.NewChecker(cfg.CurrentContext, ctx), nil
+	return safety.NewCheckerWithLevel(cfg.CurrentContext, cfg.GetEffectiveSafetyLevel()), nil
 }
 
 // NewPrinter creates a new printer respecting agent and plain mode settings
@@ -1079,7 +1232,6 @@ func NewPrinter() output.Printer {
 		Writer:    os.Stdout,
 		PlainMode: plainMode,
 		JQFilter:  jqFilter,
-		AgentMode: agentMode,
 	})
 }
 
@@ -1435,7 +1587,7 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (searches .dtctl.yaml upward, then $XDG_CONFIG_HOME/dtctl/config)")
 	rootCmd.PersistentFlags().StringVar(&contextName, "context", "", "use a specific context for this invocation (env: DTCTL_CONTEXT; never persisted)")
 	rootCmd.PersistentFlags().StringVarP(&outputFormat, "output", "o", "table", "output format: json|yaml|csv|toon|table|wide")
-	rootCmd.PersistentFlags().StringVar(&jqFilter, "jq", "", "jq filter expression for structured output (json|yaml|toon); non-structured formats are auto-promoted to json")
+	rootCmd.PersistentFlags().StringVar(&jqFilter, "jq", "", "jq filter expression for structured output (json|yaml|toon); applied to the result payload, not the --agent envelope (on query: '.records', not '.result.records'); non-structured formats are auto-promoted to json")
 	rootCmd.PersistentFlags().CountVarP(&verbosity, "verbose", "v", "verbose output (-v for details, -vv for full debug including auth headers)")
 	rootCmd.PersistentFlags().BoolVar(&debugMode, "debug", false, "enable debug mode (full HTTP request/response logging, equivalent to -vv)")
 	rootCmd.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "print what would be done without doing it")

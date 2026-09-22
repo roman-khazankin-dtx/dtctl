@@ -181,7 +181,8 @@ func TestHandlerCreateSuccessAndStatuses(t *testing.T) {
 			wantErr string
 		}{
 			{status: 400, wantErr: "invalid azure_connection"},
-			{status: 403, wantErr: "access denied to create azure_connection"},
+			// 403 now surfaces the server's reason instead of swallowing it (#476).
+			{status: 403, wantErr: "create azure_connection (HTTP 403): boom"},
 			{status: 404, wantErr: fmt.Sprintf("schema %q not found", SchemaID)},
 			{status: 409, wantErr: "already exists"},
 			{status: 500, wantErr: "failed to create azure_connection: status 500"},
@@ -273,7 +274,7 @@ func TestHandlerUpdateSuccessAndStatuses(t *testing.T) {
 			wantErr string
 		}{
 			{status: 400, wantErr: "invalid azure_connection"},
-			{status: 403, wantErr: "access denied to update azure_connection"},
+			{status: 403, wantErr: "update azure_connection \"obj-1\" (HTTP 403): boom"},
 			{status: 404, wantErr: "azure_connection \"obj-1\" not found"},
 			{status: 409, wantErr: "version conflict"},
 			{status: 412, wantErr: "version conflict"},
@@ -311,15 +312,22 @@ func TestListPaginationStitchesPages(t *testing.T) {
 	calls := 0
 	h, server := newHandler(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("nextPageKey") != "" {
-			for _, p := range []string{"pageSize", "schemaIds", "scopes"} {
+			for _, p := range []string{"pageSize", "schemaIds", "scopes", "fields"} {
 				if r.URL.Query().Get(p) != "" {
 					w.WriteHeader(http.StatusBadRequest)
 					fmt.Fprintf(w, `{"error":{"code":400,"message":"%s must not be combined with nextPageKey"}}`, p)
 					return
 				}
 			}
-		} else if r.URL.Query().Get("schemaIds") != SchemaID {
-			t.Errorf("expected schemaIds=%q on first page, got %q", SchemaID, r.URL.Query().Get("schemaIds"))
+		} else {
+			if got := r.URL.Query().Get("schemaIds"); got != SchemaID {
+				t.Errorf("expected schemaIds=%q on first page, got %q", SchemaID, got)
+			}
+			// Without the projection the list returns objectId + value only,
+			// and the export loses the schemaId/scope apply needs (#509).
+			if got := r.URL.Query().Get("fields"); got != listFields {
+				t.Errorf("expected fields=%q on first page, got %q", listFields, got)
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(pages[calls])

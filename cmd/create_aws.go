@@ -12,6 +12,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/awsconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/awsmonitoringconfig"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 var (
@@ -22,6 +23,7 @@ var (
 	createAWSMonitoringConfigCredentials string
 	createAWSMonitoringConfigRegions     string
 	createAWSMonitoringConfigFeatureSets string
+	createAWSMonitoringConfigCentral     bool
 )
 
 var createAWSConnectionCmd = &cobra.Command{
@@ -60,6 +62,14 @@ Examples:
 				RoleArn:   createAWSConnectionRoleArn,
 				Consumers: []string{awsconnection.DefaultConsumer},
 			},
+		}
+
+		if dryRun {
+			return newDryRunReport(cmd).
+				Linef("Dry run: would create AWS connection").
+				Field("Name", "%s", createAWSConnectionName).
+				Field("Role ARN", "%s", createAWSConnectionRoleArn).
+				Print()
 		}
 
 		created, err := handler.Create(awsconnection.AWSConnectionCreate{Value: value})
@@ -122,35 +132,23 @@ Examples:
 			return fmt.Errorf("failed to determine extension version: %w", err)
 		}
 
-		deploymentRegion := regions[0]
-
-		payload := awsmonitoringconfig.AWSMonitoringConfig{
-			Scope: awsmonitoringconfig.DefaultScope,
-			Value: awsmonitoringconfig.Value{
-				Enabled:           false,
-				Description:       createAWSMonitoringConfigName,
-				Version:           version,
-				ActivationContext: awsmonitoringconfig.DefaultActivationContext,
-				FeatureSets:       featureSets,
-				Aws: awsmonitoringconfig.AWSConfig{
-					DeploymentRegion:        deploymentRegion,
-					Credentials:             []awsmonitoringconfig.Credential{credential},
-					RegionFiltering:         regions,
-					TagFiltering:            []awsmonitoringconfig.TagFilter{},
-					TagEnrichment:           []string{},
-					Namespaces:              []awsmonitoringconfig.CustomNamespace{},
-					ConfigurationMode:       "QUICK_START",
-					DeploymentMode:          "AUTOMATED",
-					DeploymentScope:         "SINGLE_ACCOUNT",
-					SmartscapeConfiguration: awsmonitoringconfig.FlagConfig{Enabled: true},
-					MetricsConfiguration:    awsmonitoringconfig.RegionalFlagConfig{Enabled: true, Regions: regions},
-				},
-			},
-		}
+		payload := buildAWSMonitoringConfig(
+			createAWSMonitoringConfigName, version, credential, regions, featureSets,
+			centralEnrichmentIntent(cmd, createAWSMonitoringConfigCentral))
 
 		body, err := json.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("failed to prepare request payload: %w", err)
+		}
+
+		if dryRun {
+			return newDryRunReport(cmd).
+				Linef("Dry run: would create AWS monitoring config (disabled)").
+				Field("Name", "%s", createAWSMonitoringConfigName).
+				Field("Version", "%s", version).
+				Field("Regions", "%s", strings.Join(regions, ",")).
+				Field("Feature sets", "%d", len(featureSets)).
+				Print()
 		}
 
 		created, err := monitoringHandler.Create(body)
@@ -162,6 +160,34 @@ Examples:
 		output.PrintInfo("Run 'dtctl enable aws monitoring --name %q' to enable it", createAWSMonitoringConfigName)
 		return nil
 	},
+}
+
+func buildAWSMonitoringConfig(name, version string, credential awsmonitoringconfig.Credential,
+	regions, featureSets []string, central *bool) awsmonitoringconfig.AWSMonitoringConfig {
+	return awsmonitoringconfig.AWSMonitoringConfig{
+		Scope: awsmonitoringconfig.DefaultScope,
+		Value: awsmonitoringconfig.Value{
+			Enabled:           false,
+			Description:       name,
+			Version:           version,
+			ActivationContext: awsmonitoringconfig.DefaultActivationContext,
+			FeatureSets:       featureSets,
+			Aws: awsmonitoringconfig.AWSConfig{
+				UseIngestEnrichmentConfig: central,
+				DeploymentRegion:          regions[0],
+				Credentials:               []awsmonitoringconfig.Credential{credential},
+				RegionFiltering:           regions,
+				TagFiltering:              []awsmonitoringconfig.TagFilter{},
+				TagEnrichment:             []string{},
+				Namespaces:                []awsmonitoringconfig.CustomNamespace{},
+				ConfigurationMode:         "QUICK_START",
+				DeploymentMode:            "AUTOMATED",
+				DeploymentScope:           "SINGLE_ACCOUNT",
+				SmartscapeConfiguration:   awsmonitoringconfig.FlagConfig{Enabled: true},
+				MetricsConfiguration:      awsmonitoringconfig.RegionalFlagConfig{Enabled: true, Regions: regions},
+			},
+		},
+	}
 }
 
 // printAWSConnectionInstructions prints a copy-paste 'aws cloudformation deploy'
@@ -228,9 +254,23 @@ func init() {
 
 	createAWSConnectionCmd.Flags().StringVar(&createAWSConnectionName, "name", "", "AWS connection name (required)")
 	createAWSConnectionCmd.Flags().StringVar(&createAWSConnectionRoleArn, "roleArn", "", "AWS IAM role ARN (optional; can be patched later)")
+	// Renamed to kebab-case in 1.0 (contrib breaking-changes/cloud-flags-kebab-case.md);
+	// the spelling aliases are removed outright.
+	stability.MarkFlag(createAWSConnectionCmd, "roleArn", stability.Experimental, pre10Since)
 
 	createAWSMonitoringConfigCmd.Flags().StringVar(&createAWSMonitoringConfigName, "name", "", "Monitoring config name/description (required)")
 	createAWSMonitoringConfigCmd.Flags().StringVar(&createAWSMonitoringConfigCredentials, "credentials", "", "AWS connection name or ID (required)")
 	createAWSMonitoringConfigCmd.Flags().StringVar(&createAWSMonitoringConfigRegions, "regions", "", "Comma-separated AWS regions (required, first is the deployment region)")
 	createAWSMonitoringConfigCmd.Flags().StringVar(&createAWSMonitoringConfigFeatureSets, "featureSets", "", "Comma-separated feature sets (default: all *_essential)")
+	// Renamed to kebab-case in 1.0 (contrib breaking-changes/cloud-flags-kebab-case.md);
+	// the spelling aliases are removed outright.
+	stability.MarkFlag(createAWSMonitoringConfigCmd, "featureSets", stability.Experimental, pre10Since)
+	addCentralEnrichmentFlag(createAWSMonitoringConfigCmd, &createAWSMonitoringConfigCentral)
+}
+
+// Declared stable: the invocation and output contract of these commands is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(createAWSConnectionCmd)
+	stability.MarkStable(createAWSMonitoringConfigCmd)
 }

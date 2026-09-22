@@ -1,0 +1,107 @@
+name: Docs - Generated Reference Freshness
+
+on:
+  pull_request:
+    paths:
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'scripts/gen-docs/**'
+      - 'scripts/stability/**'
+      - 'docs/**'
+      - 'makefile'
+      - '.github/workflows/docs-generate.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'scripts/gen-docs/**'
+      - 'scripts/stability/**'
+      - 'docs/**'
+      - 'makefile'
+      - '.github/workflows/docs-generate.yml'
+
+# No job here writes to the repo, so the default token stays read-only.
+permissions:
+  contents: read
+
+jobs:
+  check-generated-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.26.6'
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.x'
+
+      - name: Regenerate reference docs
+        run: make docs-generate
+
+      - name: Fail if generated docs are stale
+        run: |
+          # `git add -N` records any brand-new (untracked) generated file as an
+          # intent-to-add so `git diff` notices it too; a plain `git diff`
+          # ignores untracked files, which would let a newly-created page (e.g. a
+          # new PLAN entry, or a deleted page the generator recreated) slip
+          # through as "up to date".
+          git add -N -- docs/resources docs/README.md docs/COMMANDS.md docs/TOKEN_SCOPES.md scripts/gen-docs/INDEX.md
+          if ! git diff --exit-code -- docs/resources docs/README.md docs/COMMANDS.md docs/TOKEN_SCOPES.md scripts/gen-docs/INDEX.md; then
+            echo ""
+            echo "❌ Generated reference docs are out of date."
+            echo ""
+            echo "📌 Solution: run 'make docs-generate' locally and commit the result:"
+            echo ""
+            echo "   make docs-generate"
+            echo "   git add docs/resources docs/README.md docs/COMMANDS.md docs/TOKEN_SCOPES.md scripts/gen-docs/INDEX.md"
+            echo "   git commit"
+            exit 1
+          fi
+          echo "✅ Generated reference docs are up to date."
+
+  # The job above only guards the <!-- GENERATED --> blocks. This one guards
+  # everything around them: the overviews, examples, notes, and cross-links
+  # that people write by hand and that no generator will ever correct.
+  # The freshness gate in check-generated-docs proves the manifest matches the
+  # tree. It cannot prove the tree still keeps yesterday's promise: deleting a
+  # stable flag and regenerating satisfies it. This job compares the manifest
+  # against the base branch instead, so a withdrawal has to be argued rather
+  # than regenerated.
+  check-stability-compat:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The comparison needs the base commit, which a shallow clone omits.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.x'
+
+      - name: Refuse a withdrawal of stable surface
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          make stability-compat STABILITY_BASE="origin/${{ github.base_ref }}"
+
+  check-docs-prose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.26.6'
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.x'
+
+      - name: Check docs prose against the real CLI
+        run: make docs-check

@@ -9,6 +9,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/lookup"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/vfs"
 )
 
@@ -21,8 +22,17 @@ var createLookupCmd = &cobra.Command{
 The lookup table is stored in Grail Resource Store and can be loaded in DQL queries
 for data enrichment.
 
-For CSV files, column headers are auto-detected and a DPL parse pattern is generated automatically.
-For non-CSV formats, use --parse-pattern to specify a custom Dynatrace Pattern Language pattern.
+For CSV files, column headers are auto-detected and a DPL parse pattern is generated
+automatically: one LD* matcher per column, so cells may be empty. Quoted cells that
+contain the delimiter, CRLF line endings and rows with trailing cells omitted are
+normalized before upload. Use --dry-run to see the detected pattern.
+
+For non-CSV formats, use --parse-pattern to specify a custom Dynatrace Pattern Language
+pattern. Note that a bare LD matcher requires at least one character: use LD* for
+columns that can be empty, otherwise those rows are dropped without an error.
+
+After the upload, the number of stored records is compared against the input: dtctl
+warns when records were dropped and fails when the pattern matched nothing.
 
 Examples:
   # Create from CSV (auto-detect headers)
@@ -41,7 +51,8 @@ Examples:
   dtctl create lookup -f data.txt \
     --path /lookups/custom/data \
     --lookup-field id \
-    --parse-pattern "LD:id '|' LD:name '|' LD:value"
+    --parse-pattern "LD*:id '|' LD*:name '|' LD*:value" \
+    --skip-records 1
 
   # Create from manifest
   dtctl create lookup -f lookup-manifest.yaml
@@ -111,22 +122,34 @@ Examples:
 
 		// Handle dry-run
 		if dryRun {
-			fmt.Printf("Dry run: would create lookup table\n")
-			fmt.Printf("Path: %s\n", req.FilePath)
-			fmt.Printf("Lookup Field: %s\n", req.LookupField)
+			report := newDryRunReport(cmd).
+				Linef("Dry run: would create lookup table").
+				Field("Path", "%s", req.FilePath).
+				Field("Lookup Field", "%s", req.LookupField)
 			if req.DisplayName != "" {
-				fmt.Printf("Display Name: %s\n", req.DisplayName)
+				report.Field("Display Name", "%s", req.DisplayName)
 			}
 			if req.Description != "" {
-				fmt.Printf("Description: %s\n", req.Description)
+				report.Field("Description", "%s", req.Description)
 			}
 			if req.ParsePattern != "" {
-				fmt.Printf("Parse Pattern: %s\n", req.ParsePattern)
-			} else {
-				fmt.Printf("Parse Pattern: (auto-detect from CSV)\n")
+				return report.
+					Field("Parse Pattern", "%s", req.ParsePattern).
+					Field("File Size", "%d bytes", len(fileData)).
+					Print()
 			}
-			fmt.Printf("File Size: %d bytes\n", len(fileData))
-			return nil
+
+			prepared, err := lookup.PrepareCSV(fileData)
+			if err != nil {
+				return fmt.Errorf("failed to detect CSV pattern: %w", err)
+			}
+			report.
+				Field("Parse Pattern", "%s (auto-detected)", prepared.Pattern).
+				Field("Records", "%d", prepared.DataRecords)
+			if prepared.Normalized {
+				report.Linef("Note: CSV will be re-emitted with %s separators (quoted cells, padded rows or CRLF line endings)", prepared.Delimiter)
+			}
+			return report.Field("File Size", "%d bytes", len(prepared.Content)).Print()
 		}
 
 		_, c, err := SetupWithSafety(safety.OperationCreate)
@@ -141,13 +164,33 @@ Examples:
 			return fmt.Errorf("failed to create lookup table: %w", err)
 		}
 
-		output.PrintSuccess("Lookup table %q created", path)
-		output.PrintInfo("  Records: %d", result.Records)
-		output.PrintInfo("  File Size: %d bytes", result.FileSize)
+		// The upload API answers 2xx even when the parse pattern matched
+		// nothing, so the counts have to be reconciled with the input before
+		// this can be called a success (#471).
+		warning, countErr := result.CheckRecordCount()
+
+		if countErr == nil {
+			output.PrintSuccess("Lookup table %q created", path)
+		} else {
+			output.PrintWarning("Lookup table %q created but no records were stored", path)
+		}
+		if result.InputRecords > 0 {
+			output.PrintInfo("  Records: %d of %d uploaded", result.Records, result.InputRecords)
+		} else {
+			output.PrintInfo("  Records: %d", result.Records)
+		}
+		output.PrintInfo("  Pattern Matches: %d", result.PatternMatches)
+		output.PrintInfo("  File Size: %d bytes (%d uploaded)", result.FileSize, result.UploadedBytes)
 		if result.DiscardedDuplicates > 0 {
 			output.PrintInfo("  Note: %d duplicate records were discarded", result.DiscardedDuplicates)
 		}
-		return nil
+		if warning != "" {
+			output.PrintWarning("%s", warning)
+		}
+		if warning != "" || countErr != nil {
+			output.PrintHint("Parse pattern used: %s", result.ParsePattern)
+		}
+		return countErr
 	},
 }
 
@@ -163,4 +206,10 @@ func init() {
 	createLookupCmd.Flags().String("timezone", "UTC", "timezone for parsing time/date fields")
 	createLookupCmd.Flags().String("locale", "en_US", "locale for parsing locale-specific data")
 	_ = createLookupCmd.MarkFlagRequired("file")
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(createLookupCmd)
 }

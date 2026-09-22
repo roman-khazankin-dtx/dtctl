@@ -67,6 +67,9 @@ var ResourceScopes = map[string]AccessScopes{
 	"workflow":           {Read: []string{"automation:workflows:read"}, Write: []string{"automation:workflows:write"}, Run: []string{"automation:workflows:run"}},
 	"workflow-execution": {Read: []string{"automation:workflows:read"}},
 	"wfe-task-result":    {Read: []string{"automation:workflows:read"}},
+	// Delete requires write (the DELETE endpoint) plus read (the pre-delete GET
+	// for ownership resolution). No separate delete scope exists in the API.
+	"scheduling-rule": {Read: []string{"automation:rules:read"}, Write: []string{"automation:rules:write"}, Delete: []string{"automation:rules:write", "automation:rules:read"}},
 
 	// Documents (dashboards / notebooks are Documents). Delete is a distinct
 	// scope (documents move to trash on delete).
@@ -74,6 +77,10 @@ var ResourceScopes = map[string]AccessScopes{
 	"dashboard": {Read: []string{"document:documents:read"}, Write: []string{"document:documents:write"}, Delete: []string{"document:documents:delete"}},
 	"notebook":  {Read: []string{"document:documents:read"}, Write: []string{"document:documents:write"}, Delete: []string{"document:documents:delete"}},
 	"trash":     {Read: []string{"document:trash.documents:read"}, Write: []string{"document:trash.documents:restore"}, Delete: []string{"document:trash.documents:delete"}},
+
+	// `inventory arrivals` is pure DQL against the environment's own data —
+	// same Grail read surface as `query`, no managed resource of its own.
+	"arrivals": {Read: QueryScopes},
 
 	// Grail storage. Buckets are managed via the bucket data scopes (delete
 	// folds into write); lookups and segments are stored as files / filter
@@ -174,6 +181,16 @@ var ResourceScopes = map[string]AccessScopes{
 	// from a static table. An entry here claiming a single scope for every
 	// possible target would be wrong for almost all of them.
 	"api": {},
+
+	// Platform Management (/platform/management/v1/...).
+	// platform-management:environments:read is the documented narrow scope for
+	// these endpoints, but it is not grantable to OAuth clients via the standard
+	// login flow. app-engine:apps:run also authorizes all three endpoints and IS
+	// grantable, so we use it here. The scope is already in every safety-level
+	// set via the "app" resource — no extra login scope needed.
+	"environment":      {Read: []string{"app-engine:apps:run"}},
+	"license":          {Read: []string{"app-engine:apps:run"}},
+	"license-settings": {Read: []string{"app-engine:apps:run"}},
 }
 
 // localResources are catalog subcommands that operate entirely on the local
@@ -184,8 +201,11 @@ var localResources = map[string]bool{
 	// config / context management
 	"current-context": true, "delete-context": true, "describe-context": true,
 	"get-contexts": true, "use-context": true, "set-context": true,
-	"set-credentials": true, "migrate-tokens": true, "init": true,
+	"set-credentials": true, "delete-credentials": true,
+	"migrate-tokens": true, "init": true,
 	"view": true, "current": true, "set": true,
+	// development-feature opt-in listing (reads the binary's own registry)
+	"list-development": true,
 	// ctx aliases
 	"describe": true, "delete": true, "token": true, "discover-account": true,
 	// auth (local token storage / introspection)
@@ -293,6 +313,7 @@ func (s *scopeSet) addResource(resource string, accesses ...Access) {
 // included (readwrite-mine passes false).
 func (s *scopeSet) addReadTier(extended bool) {
 	s.addResource("workflow", AccessRead)
+	s.addResource("scheduling-rule", AccessRead)
 	s.addResource("dashboard", AccessRead)
 	s.add("document:direct-shares:read", "document:trash.documents:read")
 	s.addResource("slo", AccessRead)
@@ -328,6 +349,7 @@ func (s *scopeSet) addMineWrites() {
 	s.addResource("dashboard", AccessWrite, AccessDelete)
 	s.add("document:direct-shares:write", "document:direct-shares:delete", "document:trash.documents:restore")
 	s.addResource("workflow", AccessWrite, AccessRun)
+	s.addResource("scheduling-rule", AccessWrite)
 	s.addResource("slo", AccessWrite)
 	s.addResource("setting", AccessWrite)
 	s.addResource("extension", AccessWrite)
@@ -360,6 +382,7 @@ func (s *scopeSet) addAllExtras() {
 func (s *scopeSet) addUnrestricted() {
 	// reads (environment shares replace direct shares)
 	s.addResource("workflow", AccessRead)
+	s.addResource("scheduling-rule", AccessRead)
 	s.addResource("dashboard", AccessRead)
 	s.add("document:environment-shares:read", "document:trash.documents:read")
 	s.addResource("slo", AccessRead)
@@ -390,6 +413,7 @@ func (s *scopeSet) addUnrestricted() {
 	s.add("document:environment-shares:write")
 	s.add("document:trash.documents:restore", "document:trash.documents:delete")
 	s.addResource("workflow", AccessWrite, AccessRun)
+	s.addResource("scheduling-rule", AccessWrite)
 	s.addResource("slo", AccessWrite)
 	s.addResource("setting", AccessWrite)
 	s.addResource("extension", AccessWrite)

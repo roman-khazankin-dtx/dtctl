@@ -10,6 +10,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/edgeconnect"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/util/format"
 	"github.com/dynatrace-oss/dtctl/pkg/vfs"
 )
@@ -75,12 +76,13 @@ Examples:
 
 		// Handle dry-run
 		if dryRun {
-			fmt.Printf("Dry run: would create EdgeConnect\n")
-			fmt.Printf("Name: %s\n", req.Name)
+			report := newDryRunReport(cmd).
+				Linef("Dry run: would create EdgeConnect").
+				Field("Name", "%s", req.Name)
 			if len(req.HostPatterns) > 0 {
-				fmt.Printf("Host Patterns: %s\n", strings.Join(req.HostPatterns, ", "))
+				report.Field("Host Patterns", "%s", strings.Join(req.HostPatterns, ", "))
 			}
-			return nil
+			return report.Print()
 		}
 
 		_, c, err := SetupWithSafety(safety.OperationCreate)
@@ -113,4 +115,10 @@ func init() {
 	createEdgeConnectCmd.Flags().StringP("file", "f", "", "file containing EdgeConnect definition")
 	createEdgeConnectCmd.Flags().String("name", "", "EdgeConnect name (RFC 1123 compliant, max 50 chars)")
 	createEdgeConnectCmd.Flags().String("host-patterns", "", "comma-separated list of host patterns")
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(createEdgeConnectCmd)
 }

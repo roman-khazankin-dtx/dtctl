@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	workflowpkg "github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 // execWorkflowResult is the structured response for agent mode.
@@ -45,6 +45,15 @@ func (v *singleUseStringValue) Set(value string) error {
 	v.set = true
 	*v.value = value
 	return nil
+}
+
+// Reset clears the "already provided" marker. The per-invocation flag reset
+// (resetFlagSet) restores flags by calling Reset when a Value implements it;
+// routing the reset through Set(DefValue) would trip the single-use guard
+// before the real parse even starts.
+func (v *singleUseStringValue) Reset() {
+	v.set = false
+	*v.value = ""
 }
 
 func (v *singleUseStringValue) String() string {
@@ -175,7 +184,7 @@ func execWorkflowWait(cmd *cobra.Command, executor *exec.WorkflowExecutor, execu
 		Timeout:      timeout,
 	}
 
-	return executor.WaitForCompletion(context.Background(), executionID, opts)
+	return executor.WaitForCompletion(cmdContext(cmd), executionID, opts)
 }
 
 // execWorkflowShowResults prints per-task results in human-readable format.
@@ -347,4 +356,10 @@ func registerWorkflowExecFlags(cmd *cobra.Command) {
 
 func init() {
 	registerWorkflowExecFlags(execWorkflowCmd)
+
+	// In 1.0 this command waits for the execution by default (contrib
+	// breaking-changes/exec-wait-default.md). The break is the default, so no
+	// flag carries it: `dtctl exec workflow <id>` returns after the run instead
+	// of after the trigger, and it does so without an error to notice.
+	stability.Mark(execWorkflowCmd, stability.Experimental, pre10Since)
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 var taskName string
@@ -72,7 +73,10 @@ Examples:
 		handler := workflow.NewExecutionHandler(c)
 
 		if followLogs {
-			return followExecutionLogs(handler, executionID, taskName, allTaskLogs, tasksOnlyLogs)
+			if !caps.LongRunningStreams {
+				return &CapabilityError{Feature: "log following"}
+			}
+			return followExecutionLogs(cmd.Context(), handler, executionID, taskName, allTaskLogs, tasksOnlyLogs)
 		}
 
 		var logs string
@@ -114,9 +118,9 @@ Examples:
 }
 
 // followExecutionLogs streams logs in real-time until the execution completes
-func followExecutionLogs(handler *workflow.ExecutionHandler, executionID, task string, allLogs, tasksOnly bool) error {
-	// Set up signal handling for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+func followExecutionLogs(parentCtx context.Context, handler *workflow.ExecutionHandler, executionID, task string, allLogs, tasksOnly bool) error {
+	// Compose with SIGINT/SIGTERM for graceful shutdown.
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
@@ -189,7 +193,11 @@ func followExecutionLogs(handler *workflow.ExecutionHandler, executionID, task s
 			return nil
 		}
 
-		time.Sleep(pollInterval)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
 	}
 }
 
@@ -208,6 +216,22 @@ func init() {
 	logsCmd.AddCommand(logsWorkflowExecutionCmd)
 	logsWorkflowExecutionCmd.Flags().StringVarP(&taskName, "task", "t", "", "Get logs for a specific task")
 	logsWorkflowExecutionCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "Follow logs in real-time until execution completes")
+	// -f is reserved for --file in 1.0 (contrib breaking-changes/short-flag-f.md).
+	stability.MarkFlag(logsWorkflowExecutionCmd, "follow", stability.Experimental, pre10Since)
 	logsWorkflowExecutionCmd.Flags().BoolVarP(&allTaskLogs, "all", "a", false, "Get all logs (workflow execution log + all task logs)")
 	logsWorkflowExecutionCmd.Flags().BoolVar(&tasksOnlyLogs, "tasks", false, "Get task logs only (all tasks with headers)")
+
+	// In 1.0 this command's output is reshaped, not extended (contrib
+	// breaking-changes/agent-output-envelope.md): agent mode wraps the log in
+	// the standard envelope with --tasks/--all under result.tasks, --follow -A
+	// becomes a usage error, and the plain-mode "No logs available." notice
+	// moves to stderr. Nothing a caller parses today survives, and there is no
+	// flag to hang that on — the contract is the command's.
+	stability.Mark(logsWorkflowExecutionCmd, stability.Experimental, pre10Since)
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(logsCmd)
 }

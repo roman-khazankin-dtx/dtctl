@@ -9,6 +9,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/extension"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/vfs"
 )
 
@@ -59,13 +60,13 @@ Examples:
 		}
 
 		if file != "" {
-			return runUploadExtension(file)
+			return runUploadExtension(cmd, file)
 		}
-		return runInstallHubExtension(hubExtension, version)
+		return runInstallHubExtension(cmd, hubExtension, version)
 	},
 }
 
-func runUploadExtension(file string) error {
+func runUploadExtension(cmd *cobra.Command, file string) error {
 	// Read the zip file
 	zipData, err := vfs.ReadFile(file)
 	if err != nil {
@@ -73,8 +74,11 @@ func runUploadExtension(file string) error {
 	}
 
 	if dryRun {
-		fmt.Printf("Dry run: would upload extension from %s (%d bytes)\n", file, len(zipData))
-		return nil
+		return newDryRunReport(cmd).
+			Linef("Dry run: would upload extension from %s (%d bytes)", file, len(zipData)).
+			Detail("file", "%s", file).
+			Detail("size_bytes", "%d", len(zipData)).
+			Print()
 	}
 
 	_, c, err := SetupWithSafety(safety.OperationCreate)
@@ -94,14 +98,19 @@ func runUploadExtension(file string) error {
 	return nil
 }
 
-func runInstallHubExtension(extensionID, version string) error {
+func runInstallHubExtension(cmd *cobra.Command, extensionID, version string) error {
 	if dryRun {
+		report := newDryRunReport(cmd).Detail("extension", "%s", extensionID)
 		if version != "" {
-			fmt.Printf("Dry run: would install Hub extension %q version %s\n", extensionID, version)
+			report.
+				Linef("Dry run: would install Hub extension %q version %s", extensionID, version).
+				Detail("version", "%s", version)
 		} else {
-			fmt.Printf("Dry run: would install Hub extension %q (latest version)\n", extensionID)
+			report.
+				Linef("Dry run: would install Hub extension %q (latest version)", extensionID).
+				Detail("version", "latest")
 		}
-		return nil
+		return report.Print()
 	}
 
 	_, c, err := SetupWithSafety(safety.OperationCreate)
@@ -125,4 +134,10 @@ func init() {
 	createExtensionCmd.Flags().StringP("file", "f", "", "path to the extension zip file (for custom extension upload)")
 	createExtensionCmd.Flags().String("hub-extension", "", "Hub extension catalog ID to install (e.g. com.dynatrace.extension.host-monitoring)")
 	createExtensionCmd.Flags().String("version", "", "version to install (only for --hub-extension; defaults to latest)")
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(createExtensionCmd)
 }

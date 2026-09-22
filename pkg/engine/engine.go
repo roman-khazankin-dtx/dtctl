@@ -6,13 +6,28 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 
 	"github.com/google/shlex"
 
 	"github.com/dynatrace-oss/dtctl/cmd"
 	"github.com/dynatrace-oss/dtctl/pkg/config"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/vfs"
 )
+
+// engineSlot is the single-execution semaphore: only one invocation runs at a time.
+var engineSlot = make(chan struct{}, 1)
+
+// engineQueued tracks how many requests are currently waiting for or holding the slot.
+var engineQueued atomic.Int64
+
+// ErrTooManyQueued is returned by Execute/ExecuteWithLimits when admission
+// control sheds a request because MaxQueued is already at capacity. Callers
+// that expose the engine over a transport (e.g. pkg/serve) should map this to
+// a "server busy" status (HTTP 503) rather than a client error, and a caller
+// this happens to may retry with backoff.
+var ErrTooManyQueued = errors.New("engine: too many queued requests")
 
 // Request is one dtctl invocation for one tenant.
 type Request struct {
@@ -40,6 +55,39 @@ type Request struct {
 	// the visible command surface for this request. Empty is the full
 	// (service-supported) surface.
 	Profile string
+	// MinStability is the stability floor for this request: the weakest
+	// contract a command or flag may offer and still be reachable
+	// (stable | experimental). `development` is rejected — that tier is gated
+	// at registration, a stage earlier than the floor, and a request has no
+	// opt-in for it.
+	//
+	// Empty selects cmd.SessionDefaultMinStability — `stable`. That is
+	// stricter than the interactive CLI's default, and deliberately so: a
+	// request is unattended automation, nobody reads the `[Experimental]`
+	// badge on its behalf, and an experimental command's shape can change
+	// under a caller that pinned no dtctl version. Ask for `experimental`
+	// explicitly when the host is prepared to re-test on upgrade.
+	MinStability string
+	// StabilityExceptions admit individual below-floor commands and flags,
+	// each written as a command path optionally suffixed with one flag
+	// ("get breakpoints", "query --decode-snapshots"). Naming a command also
+	// admits the flags that are below the floor only because that command is;
+	// a flag with a weaker contract of its own needs its own entry.
+	//
+	// Prefer this to lowering MinStability: it keeps the request's widened
+	// surface to what the host has actually tested, instead of also picking up
+	// whatever lands in the experimental tier in the next release. Unlike the
+	// floor, there is no environment variable for exceptions — this field is
+	// the only way to express them in engine mode.
+	StabilityExceptions []string
+	// NoDeprecated makes this request refuse every deprecated command and
+	// flag, as if the removal release had already happened — so a host can
+	// find out in its own test suite that it still depends on something
+	// scheduled to go, rather than on the day it is removed.
+	//
+	// Not a stability level: a deprecated command is stable in shape and
+	// satisfies any floor, it merely has a removal date. Off by default.
+	NoDeprecated bool
 
 	// Files is the request's virtual filesystem: every file argument
 	// (`-f x.yaml`, `--data-file`, ...) resolves against it, and files the
@@ -75,6 +123,10 @@ type Result struct {
 	// Files is the complete final state of the request's virtual filesystem:
 	// the input files plus anything the command wrote or rewrote.
 	Files map[string][]byte
+	// Truncated is true when stdout or stderr was cut at MaxOutputBytes.
+	// The output is still valid up to the cap; callers should surface this
+	// so users know the result is incomplete.
+	Truncated bool
 }
 
 // Execute runs one dtctl invocation and returns its outcome.
@@ -84,6 +136,11 @@ type Result struct {
 // was already done. Everything after the run starts — including command
 // failures — is expressed CLI-style in Result: exit code plus stdout/stderr.
 func Execute(ctx context.Context, req Request) (*Result, error) {
+	return ExecuteWithLimits(ctx, req, DefaultLimits())
+}
+
+// executeInner is the shared implementation called by ExecuteWithLimits.
+func executeInner(ctx context.Context, req Request, limits Limits) (*Result, error) {
 	argv, err := req.argv()
 	if err != nil {
 		return nil, err
@@ -91,10 +148,47 @@ func Execute(ctx context.Context, req Request) (*Result, error) {
 	if err := req.validate(); err != nil {
 		return nil, err
 	}
-	// The context gates the start only: a request cancelled while waiting in
-	// line must not run, but a run in progress cannot be killed (see the
-	// package documentation on cancellation).
-	if err := ctx.Err(); err != nil {
+	if limits.MaxFileBytes > 0 {
+		var total int64
+		for _, data := range req.Files {
+			total += int64(len(data))
+		}
+		if total > limits.MaxFileBytes {
+			return nil, fmt.Errorf("engine: request files total %d bytes, exceeds MaxFileBytes (%d)", total, limits.MaxFileBytes)
+		}
+	}
+	// Apply the duration budget. The timeout context is threaded into the
+	// command tree (via RunOptions.Context) so long-running loops that observe
+	// cmd.Context() are cancelled when the budget elapses.
+	timeoutCtx, cancelTimeout := context.WithTimeout(ctx, limits.MaxDuration)
+	defer cancelTimeout()
+
+	// Admission: bound queue depth and acquire the execution slot in a
+	// context-aware way so cancelled requests (including timed-out ones) do
+	// not block behind a long queue.
+	// Add's return value is the count *after* this request's increment, so
+	// concurrent arrivals each see their own consistent snapshot. A separate
+	// Load() here would race: a request that was admissible at increment time
+	// could read a counter a later arrival had already bumped further, and
+	// reject itself for a slot that was in fact still available.
+	if engineQueued.Add(1) > int64(limits.MaxQueued) {
+		engineQueued.Add(-1)
+		return nil, ErrTooManyQueued
+	}
+	select {
+	case engineSlot <- struct{}{}:
+	case <-timeoutCtx.Done():
+		engineQueued.Add(-1)
+		return nil, timeoutCtx.Err()
+	}
+	defer func() {
+		<-engineSlot
+		engineQueued.Add(-1)
+	}()
+
+	// Catch the race where the deadline fired between acquiring the slot and
+	// starting the run.
+	if err := timeoutCtx.Err(); err != nil {
 		return nil, err
 	}
 
@@ -113,7 +207,8 @@ func Execute(ctx context.Context, req Request) (*Result, error) {
 	stdin := io.Reader(bytes.NewReader(req.Stdin))
 
 	files := vfs.NewMapFS(req.Files)
-	var stdout, stderr bytes.Buffer
+	stdout := &cappedBuffer{limit: limits.MaxOutputBytes}
+	stderr := &cappedBuffer{limit: limits.MaxOutputBytes}
 	code := cmd.Run(argv, cmd.RunOptions{
 		// Grant nothing: no plugins, shell aliases, hooks, editors, or
 		// browser opens. Everything a request needs happens in-process.
@@ -122,20 +217,29 @@ func Execute(ctx context.Context, req Request) (*Result, error) {
 			EnvironmentURL: req.EnvironmentURL,
 			Token:          req.Token,
 			SafetyLevel:    config.SafetyLevel(req.SafetyLevel),
+			// Passed as typed fields rather than through env: the floor decides
+			// which commands exist for this request, so it must come from the
+			// request and not from whatever DTCTL_MIN_STABILITY the host process
+			// happens to carry (which Session scrubs for exactly that reason).
+			MinStability:        config.StabilityLevel(req.MinStability),
+			StabilityExceptions: req.StabilityExceptions,
+			NoDeprecated:        req.NoDeprecated,
 		},
 		Env:             env,
 		FS:              files,
 		Stdin:           stdin,
-		Stdout:          &stdout,
-		Stderr:          &stderr,
+		Stdout:          stdout,
+		Stderr:          stderr,
 		BlockedCommands: unsupportedCommands,
+		Context:         timeoutCtx,
 	})
 
 	return &Result{
-		ExitCode: code,
-		Stdout:   stdout.Bytes(),
-		Stderr:   stderr.Bytes(),
-		Files:    files.Files(),
+		ExitCode:  code,
+		Stdout:    stdout.Bytes(),
+		Stderr:    stderr.Bytes(),
+		Files:     files.Files(),
+		Truncated: stdout.truncated || stderr.truncated,
 	}, nil
 }
 
@@ -180,6 +284,20 @@ func (r *Request) validate() error {
 		if !valid {
 			return fmt.Errorf("engine: invalid safety level %q", r.SafetyLevel)
 		}
+	}
+	if r.MinStability != "" {
+		level, err := config.ParseStabilityLevel(r.MinStability)
+		if err != nil || level == config.StabilityDevelopment {
+			return fmt.Errorf("engine: invalid minimum stability %q; valid levels are "+
+				"experimental, stable (development surface is not reachable from a request)",
+				r.MinStability)
+		}
+	}
+	// Rejected, not ignored: an exception the engine silently dropped would
+	// look like the command is simply gone, and the host would have no way to
+	// tell a typo from a tier it misjudged.
+	if _, err := stability.ParseExceptions(r.StabilityExceptions); err != nil {
+		return fmt.Errorf("engine: %w", err)
 	}
 	return nil
 }

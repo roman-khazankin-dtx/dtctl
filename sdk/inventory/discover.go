@@ -2,8 +2,10 @@ package inventory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,11 +19,53 @@ type RunResult struct {
 	Records   []map[string]interface{}
 	Seconds   float64
 	Truncated bool
+	// TruncationCause says which limit cut the result short, so the evidence
+	// can name the one remedy that applies instead of listing three. Empty
+	// when Truncated is false, or when the runner cannot tell.
+	TruncationCause TruncationCause
+	// ColumnTypes maps a result column to its DQL type descriptor, merged
+	// across the response's index ranges. A column the query named but the
+	// data does not carry comes back as "undefined" — that is how a probe can
+	// tell "this dimension does not exist here" from "it exists and is empty".
+	ColumnTypes map[string]string
+	// Sampled reports that the environment actually applied sampling to this
+	// result. It is deliberately not a copy of what the query asked for:
+	// Grail refuses to sample some data objects (events, bizevents,
+	// security.events) and rounds every ratio down to a power of ten, and it
+	// reports both as a warning on a 200 rather than an error. A probe that
+	// assumed its requested ratio had been honoured would extrapolate a
+	// refused object's count by that whole factor.
+	Sampled bool
 }
+
+// TypeUndefined is the DQL type of a column the query referenced but the
+// underlying data has no such field for.
+const TypeUndefined = "undefined"
+
+// TruncationCause identifies which limit cut a probe short. The distinction is
+// load-bearing for onboarding verification on large tenants: a scan cap is a
+// dtctl setting the user can raise, while a result cap or a read timeout calls
+// for a different fix entirely, and a message that lists all three leaves the
+// reader to guess which of their signals is actually unanswerable and why.
+type TruncationCause string
+
+const (
+	TruncationScanLimit   TruncationCause = "scan_limit"
+	TruncationResultLimit TruncationCause = "result_limit"
+	TruncationTimeout     TruncationCause = "timeout"
+	TruncationConsumption TruncationCause = "consumption"
+)
 
 // Runner executes DQL on the live environment. The cmd layer implements it
 // over the existing DQL executor (with scan caps); tests implement it over
 // fixtures.
+//
+// Returning records is not the whole job. RunResult also carries the response's
+// column types and the reason a result was cut short, and several verdicts are
+// only as good as those two fields — a Runner that omits ColumnTypes turns every
+// "n/a" into a confident "empty", with no error to say so. Build the result with
+// ColumnTypesOf and FirstTruncationCause rather than filling those fields by
+// hand; see runner.go.
 type Runner interface {
 	RunQuery(ctx context.Context, dql string) (*RunResult, error)
 }
@@ -34,9 +78,41 @@ type DiscoverOptions struct {
 	// DQL) and pass through into the inventory.
 	Segments []SegmentInfo
 	// Budget is mandatory, not advisory: discovery stops with a partial
-	// inventory rather than overrunning.
+	// inventory rather than overrunning. BudgetSeconds bounds each query by
+	// the budget still unspent when it is issued, so a single slow query
+	// cannot overrun the budget — it is cut off at it and its capabilities
+	// degrade to unknown.
 	BudgetQueries int     // 0 = 100
 	BudgetSeconds float64 // 0 = 300
+
+	// Since switches discovery into windowed arrival mode: instead of the
+	// retention-scoped capability verdicts, report per-signal ingest state for
+	// Scope inside the window. It is a DQL timeframe expression
+	// ("now()-15m"), already normalized by the caller.
+	Since string
+	// Scope is the DQL filter fragment scoping every windowed probe. Windowed
+	// mode requires it: an unscoped windowed count is the single most
+	// expensive query in the battery (measured 204 GB on one tenant's logs),
+	// and the unscoped question is already answered for free by bucket
+	// metadata.
+	Scope string
+	// StaleAfter is the age past which a signal that did match is reported
+	// stale rather than live.
+	StaleAfter time.Duration
+	// Signals optionally restricts windowed probing to named capabilities.
+	Signals []string
+	// ScanLimitGBytes is the per-probe scan cap the Runner applies, carried
+	// here only so evidence can name the number the user has to raise. The
+	// SDK never enforces it — that is the Runner's job — and 0 means the
+	// Runner did not say, in which case the evidence stays unquantified.
+	ScanLimitGBytes float64
+	// DisableSampling turns off the sampled retry that a scan-capped stream
+	// probe otherwise falls back to (see sampling.go). The retry never weakens
+	// a verdict it could have reached exhaustively — it only runs where the
+	// alternative is no verdict at all — but it does make the surviving
+	// numbers estimates, and a caller that would rather have "unknown" than an
+	// approximation can say so.
+	DisableSampling bool
 }
 
 type budgetRunner struct {
@@ -52,6 +128,10 @@ type budgetRunner struct {
 
 var errBudgetExhausted = fmt.Errorf("discovery budget exhausted")
 
+// metricCatalogLimit bounds the metric-key catalog read. Hitting it exactly is
+// treated as truncation: see the read site.
+const metricCatalogLimit = 10000
+
 func (b *budgetRunner) run(ctx context.Context, dql string) (*RunResult, error) {
 	// A cancelled run must not keep issuing queries (each would round-trip to
 	// the executor just to fail); surface the cancellation instead.
@@ -62,12 +142,31 @@ func (b *budgetRunner) run(ctx context.Context, dql string) (*RunResult, error) 
 		b.skipped = true
 		return nil, errBudgetExhausted
 	}
-	res, err := b.runner.RunQuery(ctx, dql)
+	// The budget has to bound the query, not just the decision to issue it:
+	// debiting it afterwards lets one slow query overrun by its whole
+	// duration, which is how a 20s budget produced a 60s run (and, under an
+	// outer wall, a SIGKILL with no inventory at all).
+	qctx, cancel := context.WithTimeout(ctx, time.Duration(b.seconds*float64(time.Second)))
+	defer cancel()
+	start := time.Now()
+	res, err := b.runner.RunQuery(qctx, dql)
 	b.report.Queries++
 	b.queries--
 	if res != nil {
 		b.report.Seconds += res.Seconds
 		b.seconds -= res.Seconds
+	}
+	// Cut at the budget: the query is charged what it actually spent and the
+	// budget closes, so the caller degrades this fact source to unknown the
+	// same way it would for any other refusal. A cancelled parent is the
+	// caller's abort, not a budget stop, and keeps propagating.
+	if err != nil && ctx.Err() == nil && errors.Is(qctx.Err(), context.DeadlineExceeded) {
+		if res == nil {
+			b.report.Seconds += time.Since(start).Seconds()
+		}
+		b.seconds = 0
+		b.skipped = true
+		return nil, errBudgetExhausted
 	}
 	return res, err
 }
@@ -86,6 +185,17 @@ type discoveredFacts struct {
 	// empty holds no data within retention. Streams without bucket coverage
 	// are simply not in the map and keep their catalog verdict.
 	streamRows map[string]int64
+	// bucketRows is the same figure one level down (bucket name → records),
+	// needed because a view-shaped data object has no table of its own and
+	// can only be costed through the buckets it reads.
+	bucketRows map[string]int64
+	// viewBuckets maps a view-shaped data object to the bucket globs its
+	// catalog query_string names, so its retention coverage resolves as
+	// precisely as a table's rather than not at all.
+	viewBuckets map[string][]string
+	// viewTable maps a view-shaped data object to the table it fetches, the
+	// weaker fallback when the view names no buckets.
+	viewTable map[string]string
 	// The *Truncated flags mark a fact source that loaded but incompletely
 	// (result cap, scan limit): a hit in it still proves presence, but a miss
 	// proves nothing and must degrade to unknown, not absent.
@@ -128,22 +238,28 @@ func Discover(ctx context.Context, runner Runner, defs map[string]*CapabilityDef
 
 	// A hard error on the catalog aborts: without it nothing below is
 	// meaningful. Everything after degrades to a report note.
-	fetchable, queryOnly, objectsTruncated, err := br.dataObjectCatalog(ctx)
+	fetchable, queryOnly, viewQueries, objectsTruncated, err := br.dataObjectCatalog(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("data-object discovery failed: %w", err)
 	}
+	// Windowed mode answers a narrow question and its result is consumed by
+	// gates and agents, so the environment-wide catalog listings are left out
+	// of it: they are not what was asked and they dominate the payload.
+	windowed := opts.Since != ""
 	// The legacy dt.entity.* lookback views are collapsed to a count: they can
 	// number in the hundreds, and the census below is the canonical entity
 	// surface. The full catalog still backs capability verdicts.
-	for _, name := range fetchable {
-		if strings.HasPrefix(name, "dt.entity.") {
-			inv.EntityViews++
-		} else {
-			inv.DataObjects = append(inv.DataObjects, name)
+	if !windowed {
+		for _, name := range fetchable {
+			if strings.HasPrefix(name, "dt.entity.") {
+				inv.EntityViews++
+			} else {
+				inv.DataObjects = append(inv.DataObjects, name)
+			}
 		}
+		inv.QueryOnly = queryOnly
 	}
-	inv.QueryOnly = queryOnly
-	if len(queryOnly) > 0 {
+	if len(queryOnly) > 0 && !windowed {
 		inv.Notes = append(inv.Notes, fmt.Sprintf(
 			"catalog objects without fetch support: %s — metric data is queried via the timeseries/metrics commands, smartscape via smartscapeNodes/smartscapeEdges",
 			strings.Join(queryOnly, ", ")))
@@ -153,6 +269,24 @@ func Discover(ctx context.Context, runner Runner, defs map[string]*CapabilityDef
 		objects:          stringSet(append(append([]string{}, fetchable...), queryOnly...)),
 		objectsTruncated: objectsTruncated,
 		census:           map[string]int64{},
+		viewBuckets:      map[string][]string{},
+		viewTable:        map[string]string{},
+	}
+	for name, qs := range viewQueries {
+		buckets, table := viewBacking(qs)
+		if len(buckets) > 0 {
+			facts.viewBuckets[name] = buckets
+		}
+		if table != "" {
+			facts.viewTable[name] = table
+		}
+	}
+	// A definition may name its own buckets, for views the catalog describes
+	// without a query_string. An explicit declaration wins over inference.
+	for _, def := range defs {
+		if def != nil && def.DataObject != "" && len(def.BackingBuckets) > 0 {
+			facts.viewBuckets[def.DataObject] = def.BackingBuckets
+		}
 	}
 	if objectsTruncated {
 		report.Notes = append(report.Notes, "data-object catalog truncated — the object list is incomplete")
@@ -160,8 +294,10 @@ func Discover(ctx context.Context, runner Runner, defs map[string]*CapabilityDef
 
 	if res, err := br.run(ctx, "fetch dt.system.buckets | fields name, dt.system.table, records, has_access | sort name asc | limit 1000"); err == nil {
 		streamRows := map[string]int64{}
+		bucketRows := map[string]int64{}
 		for _, rec := range res.Records {
-			if name, ok := rec["name"].(string); ok && name != "" {
+			name, _ := rec["name"].(string)
+			if name != "" && !windowed {
 				inv.Buckets = append(inv.Buckets, name)
 			}
 			// Inaccessible buckets report no usable record count — leaving them
@@ -170,8 +306,12 @@ func Discover(ctx context.Context, runner Runner, defs map[string]*CapabilityDef
 			if access, ok := rec["has_access"].(bool); ok && !access {
 				continue
 			}
+			records := asInt64(rec["records"])
+			if name != "" {
+				bucketRows[name] += records
+			}
 			if table, ok := rec["dt.system.table"].(string); ok && table != "" {
-				streamRows[table] += asInt64(rec["records"])
+				streamRows[table] += records
 			}
 		}
 		if res.Truncated {
@@ -179,6 +319,7 @@ func Discover(ctx context.Context, runner Runner, defs map[string]*CapabilityDef
 			report.Notes = append(report.Notes, "bucket list truncated — buckets are missing")
 		} else {
 			facts.streamRows = streamRows
+			facts.bucketRows = bucketRows
 		}
 	} else if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -186,7 +327,10 @@ func Discover(ctx context.Context, runner Runner, defs map[string]*CapabilityDef
 		report.Notes = append(report.Notes, "bucket discovery failed: "+firstLine(err.Error()))
 	}
 
-	if res, err := br.run(ctx, `smartscapeNodes "*" | summarize c = count(), by:{type} | sort c desc | limit 1000`); err == nil {
+	if windowed {
+		// The entity census is a live-topology count with no "since" reading,
+		// and no signal state depends on it.
+	} else if res, err := br.run(ctx, `smartscapeNodes "*" | summarize c = count(), by:{type} | sort c desc | limit 1000`); err == nil {
 		for _, rec := range res.Records {
 			if t, ok := rec["type"].(string); ok {
 				facts.census[t] = asInt64(rec["c"])
@@ -204,11 +348,22 @@ func Discover(ctx context.Context, runner Runner, defs map[string]*CapabilityDef
 		report.Notes = append(report.Notes, "entity census failed: "+firstLine(err.Error()))
 	}
 
-	if anyMetricDef(defs) {
-		if keys, truncated, err := br.stringColumn(ctx, "metrics from:now()-2h | summarize c = count(), by:{metric.key} | limit 10000", "metric.key"); err == nil {
+	if needMetricCatalog(defs, opts, windowed) {
+		// In windowed mode the catalog is read over the caller's window, so a
+		// family that only reported before it does not resolve to a key and
+		// cannot be mistaken for arriving data.
+		catalogWindow := "now()-2h"
+		if windowed {
+			catalogWindow = opts.Since
+		}
+		if keys, truncated, err := br.stringColumn(ctx, metricCatalogDQL(defs, catalogWindow), "metric.key"); err == nil {
 			facts.metricKeys = keys
 			facts.metricsOK = true
-			facts.metricsTruncated = truncated
+			// Grail caps the metric catalog silently — on one tenant it
+			// returned exactly 100,000 keys with no notification at all — and
+			// our own limit caps it again. Either way a full page means keys
+			// were cut, and a cut catalog cannot support an absence verdict.
+			facts.metricsTruncated = truncated || len(keys) >= metricCatalogLimit
 			if truncated {
 				report.Notes = append(report.Notes, fmt.Sprintf("metric catalog truncated at %d keys — keys are missing", len(keys)))
 			}
@@ -217,6 +372,29 @@ func Discover(ctx context.Context, runner Runner, defs map[string]*CapabilityDef
 		} else if err != errBudgetExhausted {
 			report.Notes = append(report.Notes, "metric catalog failed: "+firstLine(err.Error()))
 		}
+	}
+
+	if windowed {
+		inv.Window = &ArrivalWindow{
+			Since:           opts.Since,
+			Filter:          opts.Scope,
+			StaleAfter:      roundDuration(opts.StaleAfter),
+			ScanLimitGBytes: opts.ScanLimitGBytes,
+		}
+		inv.Signals, err = br.evaluateSignals(ctx, defs, facts, opts)
+		if err != nil {
+			return nil, err
+		}
+		inv.Summary = Summarize(inv.Signals)
+		if note := allZeroTripwire(inv.Signals); note != "" {
+			inv.Notes = append(inv.Notes, note)
+		}
+		if br.skipped {
+			note := fmt.Sprintf("discovery budget exhausted after %d queries / %.0fs — the inventory is partial", report.Queries, report.Seconds)
+			inv.Notes = append(inv.Notes, note)
+			report.Notes = append(report.Notes, note)
+		}
+		return inv, nil
 	}
 
 	inv.Capabilities, inv.Absent, inv.Unknown, err = br.evaluateCapabilities(ctx, defs, facts)
@@ -377,17 +555,27 @@ func anyGlobMatch(pattern string, keys []string) bool {
 // support (the catalog's usable_with column). The catalog lists objects that
 // only work through other commands — advertising those as fetch targets bakes
 // in DATA_OBJECT_NOT_SUPPORTED failures for consumers.
-func (b *budgetRunner) dataObjectCatalog(ctx context.Context) (fetchable, queryOnly []string, truncated bool, err error) {
+// dataObjectCatalog reads the catalog. query_string comes along because it is
+// the only place a view's backing buckets are stated: a view is fetchable like
+// a table but owns no buckets, so without it every view loses its retention
+// coverage (see viewBacking).
+func (b *budgetRunner) dataObjectCatalog(ctx context.Context) (fetchable, queryOnly []string, views map[string]string, truncated bool, err error) {
 	res, err := b.run(ctx,
-		`fetch dt.system.data_objects | fieldsAdd fetchable = in("fetch", usable_with) | fields name, fetchable | sort name asc | limit 5000`)
+		`fetch dt.system.data_objects | fieldsAdd fetchable = in("fetch", usable_with) | fields name, fetchable, type, query_string | sort name asc | limit 5000`)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, nil, false, ctx.Err()
+			return nil, nil, nil, false, ctx.Err()
+		}
+		// A budget stop is not a schema mismatch: retrying the flat list would
+		// only spend a query to be refused again.
+		if errors.Is(err, errBudgetExhausted) {
+			return nil, nil, nil, false, err
 		}
 		// Environments without usable_with fall back to the flat list.
 		names, truncated, ferr := b.stringColumn(ctx, "fetch dt.system.data_objects | fields name | sort name asc | limit 5000", "name")
-		return names, nil, truncated, ferr
+		return names, nil, nil, truncated, ferr
 	}
+	views = map[string]string{}
 	for _, rec := range res.Records {
 		name, _ := rec["name"].(string)
 		if name == "" {
@@ -398,8 +586,49 @@ func (b *budgetRunner) dataObjectCatalog(ctx context.Context) (fetchable, queryO
 		} else {
 			fetchable = append(fetchable, name)
 		}
+		if t, _ := rec["type"].(string); t == "view" {
+			if qs, _ := rec["query_string"].(string); qs != "" {
+				views[name] = qs
+			}
+		}
 	}
-	return fetchable, queryOnly, res.Truncated, nil
+	return fetchable, queryOnly, views, res.Truncated, nil
+}
+
+// viewBucketPattern captures the bucket list of a view's `fetch <table>,
+// bucket: {"a", "b*"}` clause. Views are the only catalog entries that carry a
+// query_string, and parsing just this one clause out of it is enough: the goal
+// is a retention figure, not a query planner.
+var viewBucketPattern = regexp.MustCompile(`bucket\s*:\s*\{([^}]*)\}`)
+
+// viewFetchPattern captures the table a view fetches, the coarser fallback
+// when it names no buckets.
+var viewFetchPattern = regexp.MustCompile(`(?m)^\s*fetch\s+([A-Za-z_][A-Za-z0-9_.]*)`)
+
+// viewQuoted pulls the individual quoted bucket names out of a bucket clause.
+var viewQuoted = regexp.MustCompile(`"([^"]+)"`)
+
+// viewBacking resolves a view's query_string to the buckets it reads, or
+// failing that the table it fetches.
+func viewBacking(queryString string) (buckets []string, table string) {
+	// Comments can carry an example `fetch`/`bucket:` that is not the query.
+	var body []string
+	for _, line := range strings.Split(queryString, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		body = append(body, line)
+	}
+	clean := strings.Join(body, "\n")
+	if m := viewBucketPattern.FindStringSubmatch(clean); m != nil {
+		for _, q := range viewQuoted.FindAllStringSubmatch(m[1], -1) {
+			buckets = append(buckets, q[1])
+		}
+	}
+	if m := viewFetchPattern.FindStringSubmatch(clean); m != nil {
+		table = m[1]
+	}
+	return buckets, table
 }
 
 func (b *budgetRunner) stringColumn(ctx context.Context, dql, column string) ([]string, bool, error) {
@@ -414,6 +643,80 @@ func (b *budgetRunner) stringColumn(ctx context.Context, dql, column string) ([]
 		}
 	}
 	return out, res.Truncated, nil
+}
+
+// metricCatalogDQL builds the catalog read, pushing the definitions' own globs
+// into the query whenever every one of them translates.
+//
+// Reading the whole catalog to glob it locally is the most expensive thing
+// discovery does: on a large tenant it is 51.9s against 3,245 keys, while the
+// five built-in globs as a filter return the 363 keys that can actually decide
+// a verdict in 12.4s. Everything the filter drops is a key no definition could
+// have matched, so the verdicts are identical — the cost was never buying
+// anything.
+//
+// It has to stay a superset of what the local globs accept, or a dropped key
+// becomes a fabricated absence. It is: matchesValue is case-insensitive where
+// path.Match is not, and untranslatable patterns fall back to the full read
+// rather than being approximated. The local glob match still decides.
+func metricCatalogDQL(defs map[string]*CapabilityDef, window string) string {
+	if filter, ok := metricKeyFilter(metricKeyGlobs(defs)); ok {
+		return fmt.Sprintf("metrics from:%s | filter %s | summarize c = count(), by:{metric.key} | limit %d",
+			window, filter, metricCatalogLimit)
+	}
+	return fmt.Sprintf("metrics from:%s | summarize c = count(), by:{metric.key} | limit %d", window, metricCatalogLimit)
+}
+
+// metricKeyGlobs collects every metric glob in play, deduplicated and ordered
+// so the query text is stable. It reads *all* metric definitions, not just the
+// ones a windowed run selected, because the catalog it fills is shared: a
+// narrower filter would starve any other consumer of facts.metricKeys.
+func metricKeyGlobs(defs map[string]*CapabilityDef) []string {
+	seen := map[string]bool{}
+	globs := make([]string, 0, len(defs))
+	for _, d := range defs {
+		if d.MetricKey == "" || seen[d.MetricKey] {
+			continue
+		}
+		seen[d.MetricKey] = true
+		globs = append(globs, d.MetricKey)
+	}
+	sort.Strings(globs)
+	return globs
+}
+
+// metricKeyFilter renders the globs as a DQL filter, or reports that they
+// cannot be pushed down. Only `*` wildcards over the characters metric keys
+// are actually made of translate; path.Match's `?` and `[a-z]` classes have no
+// matchesValue equivalent, and a bare `*` filters nothing, so those take the
+// full catalog read instead of a filter that might exclude a real match.
+func metricKeyFilter(globs []string) (string, bool) {
+	clauses := make([]string, 0, len(globs))
+	for _, g := range globs {
+		if !translatableGlob(g) {
+			return "", false
+		}
+		clauses = append(clauses, fmt.Sprintf("matchesValue(metric.key, %q)", g))
+	}
+	if len(clauses) == 0 {
+		return "", false
+	}
+	return strings.Join(clauses, " or "), true
+}
+
+func translatableGlob(g string) bool {
+	if g == "" || strings.Trim(g, "*") == "" {
+		return false
+	}
+	for _, r := range g {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '_', r == '-', r == ':', r == '*':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func anyMetricDef(defs map[string]*CapabilityDef) bool {
@@ -475,4 +778,53 @@ func valueOrF(v, def float64) float64 {
 		return v
 	}
 	return def
+}
+
+// needMetricCatalog reports whether the metric catalog has to be read: only
+// when some metric-shaped definition will actually be evaluated.
+func needMetricCatalog(defs map[string]*CapabilityDef, opts DiscoverOptions, windowed bool) bool {
+	if !windowed {
+		return anyMetricDef(defs)
+	}
+	for name, d := range defs {
+		if d.MetricKey == "" {
+			continue
+		}
+		if len(opts.Signals) == 0 || containsFold(opts.Signals, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// allZeroTripwire warns when every signal came up empty. Field existence
+// cannot be validated up front — neither dt.system.data_objects nor `describe`
+// lists the dynamic attributes people actually scope by — so a scope naming a
+// field or value that does not exist is indistinguishable from a source that
+// genuinely stopped. When nothing at all matched while the streams themselves
+// hold data, a wrong scope is by far the likelier explanation, and saying so
+// is cheaper and more honest than a confident all-empty verdict.
+func allZeroTripwire(signals []Signal) string {
+	evaluated, empty := 0, 0
+	for _, s := range signals {
+		switch s.State {
+		// None of these say anything about whether the scope is valid, so
+		// none of them can weigh against the wrong-scope explanation. Leaving
+		// no-data in the denominator made the tripwire unfireable in
+		// practice: one stream that is empty tenant-wide — a tenant without
+		// synthetic monitoring, say — permanently suppressed the warning.
+		case SignalUnknown, SignalAbsent, SignalNoData, SignalNotApplicable:
+			continue
+		case SignalEmpty:
+			empty++
+		}
+		evaluated++
+	}
+	if evaluated < 2 || empty != evaluated {
+		return ""
+	}
+	return "every signal matched 0 records while the streams hold data within retention — " +
+		"the scope is more likely wrong than every signal failing at once; check the field " +
+		"names and values in --scope (dtctl cannot validate them: Grail does not expose the " +
+		"dynamic attributes a filter may reference)"
 }

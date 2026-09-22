@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -248,7 +249,7 @@ func (h *Handler) List(ctx context.Context, filters DocumentFilters) (*DocumentL
 // Get retrieves a specific document by ID
 func (h *Handler) Get(ctx context.Context, id string) (*Document, error) {
 	resp, err := h.client.HTTP().R().SetContext(ctx).
-		Get(fmt.Sprintf("/platform/document/v1/documents/%s", id))
+		Get(fmt.Sprintf("/platform/document/v1/documents/%s", url.PathEscape(id)))
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get document: %w", err)
@@ -270,7 +271,7 @@ func (h *Handler) Get(ctx context.Context, id string) (*Document, error) {
 // GetMetadata retrieves only the metadata for a document
 func (h *Handler) GetMetadata(ctx context.Context, id string) (*DocumentMetadata, error) {
 	resp, err := h.client.HTTP().R().SetContext(ctx).
-		Get(fmt.Sprintf("/platform/document/v1/documents/%s/metadata", id))
+		Get(fmt.Sprintf("/platform/document/v1/documents/%s/metadata", url.PathEscape(id)))
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get document metadata: %w", err)
@@ -292,7 +293,7 @@ func (h *Handler) GetMetadata(ctx context.Context, id string) (*DocumentMetadata
 func (h *Handler) Delete(ctx context.Context, id string, version int) error {
 	resp, err := h.client.HTTP().R().SetContext(ctx).
 		SetQueryParam("optimistic-locking-version", fmt.Sprintf("%d", version)).
-		Delete(fmt.Sprintf("/platform/document/v1/documents/%s", id))
+		Delete(fmt.Sprintf("/platform/document/v1/documents/%s", url.PathEscape(id)))
 
 	if err != nil {
 		return fmt.Errorf("failed to delete document: %w", err)
@@ -410,6 +411,19 @@ type UpdateRequest struct {
 	Name        string   // New name; omitted when empty
 	Description string   // New description; omitted when empty
 	Labels      []string // Replacement label set; omitted when empty
+
+	// CreateSnapshot asks the API to snapshot the document's current state
+	// before applying this update, so the pre-update content stays retrievable
+	// via ListSnapshots / RestoreSnapshot. Defaults to false: updates overwrite
+	// without keeping history unless this is set.
+	//
+	// The API caps snapshot creation at 5 per document per 60 seconds and keeps
+	// at most 50 snapshots per document (creating the 51st deletes the oldest).
+	CreateSnapshot bool
+
+	// SnapshotDescription labels the snapshot created by CreateSnapshot (max
+	// 128 characters). Ignored when CreateSnapshot is false.
+	SnapshotDescription string
 }
 
 // Update updates a document's content.
@@ -449,7 +463,16 @@ func (h *Handler) UpdateDocument(ctx context.Context, id string, version int, re
 	}
 	addLabelParts(r, req.Labels)
 
-	resp, err := r.Patch(fmt.Sprintf("/platform/document/v1/documents/%s", id))
+	// snapshotDescription is only meaningful alongside create-snapshot; the API
+	// ignores it otherwise, so don't send it and keep the request minimal.
+	if req.CreateSnapshot {
+		r.SetQueryParam("create-snapshot", "true")
+		if req.SnapshotDescription != "" {
+			r.SetMultipartFormData(map[string]string{"snapshotDescription": req.SnapshotDescription})
+		}
+	}
+
+	resp, err := r.Patch(fmt.Sprintf("/platform/document/v1/documents/%s", url.PathEscape(id)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to update document: %w", err)
 	}
@@ -670,7 +693,7 @@ func (h *Handler) ListDirectShares(ctx context.Context, documentID string) (*Dir
 // DeleteDirectShare deletes a direct share
 func (h *Handler) DeleteDirectShare(ctx context.Context, shareID string) error {
 	resp, err := h.client.HTTP().R().SetContext(ctx).
-		Delete(fmt.Sprintf("/platform/document/v1/direct-shares/%s", shareID))
+		Delete(fmt.Sprintf("/platform/document/v1/direct-shares/%s", url.PathEscape(shareID)))
 
 	if err != nil {
 		return fmt.Errorf("failed to delete direct share: %w", err)
@@ -691,7 +714,7 @@ func (h *Handler) AddDirectShareRecipients(ctx context.Context, shareID string, 
 
 	resp, err := h.client.HTTP().R().SetContext(ctx).
 		SetBody(body).
-		Post(fmt.Sprintf("/platform/document/v1/direct-shares/%s/recipients/add", shareID))
+		Post(fmt.Sprintf("/platform/document/v1/direct-shares/%s/recipients/add", url.PathEscape(shareID)))
 
 	if err != nil {
 		return fmt.Errorf("failed to add recipients: %w", err)
@@ -712,7 +735,7 @@ func (h *Handler) RemoveDirectShareRecipients(ctx context.Context, shareID strin
 
 	resp, err := h.client.HTTP().R().SetContext(ctx).
 		SetBody(body).
-		Post(fmt.Sprintf("/platform/document/v1/direct-shares/%s/recipients/remove", shareID))
+		Post(fmt.Sprintf("/platform/document/v1/direct-shares/%s/recipients/remove", url.PathEscape(shareID)))
 
 	if err != nil {
 		return fmt.Errorf("failed to remove recipients: %w", err)
@@ -903,7 +926,7 @@ func (h *Handler) ListEnvironmentShares(ctx context.Context, documentID string) 
 // DeleteEnvironmentShare deletes an environment share
 func (h *Handler) DeleteEnvironmentShare(ctx context.Context, shareID string) error {
 	resp, err := h.client.HTTP().R().SetContext(ctx).
-		Delete(fmt.Sprintf("/platform/document/v1/environment-shares/%s", shareID))
+		Delete(fmt.Sprintf("/platform/document/v1/environment-shares/%s", url.PathEscape(shareID)))
 
 	if err != nil {
 		return fmt.Errorf("failed to delete environment share: %w", err)
@@ -928,7 +951,7 @@ func (h *Handler) SetDocumentPublic(ctx context.Context, id string, version int)
 	resp, err := h.client.HTTP().R().SetContext(ctx).
 		SetQueryParam("optimistic-locking-version", fmt.Sprintf("%d", version)).
 		SetMultipartFormData(map[string]string{"isPrivate": "false"}).
-		Patch(fmt.Sprintf("/platform/document/v1/documents/%s", id))
+		Patch(fmt.Sprintf("/platform/document/v1/documents/%s", url.PathEscape(id)))
 	if err != nil {
 		return fmt.Errorf("failed to update document visibility: %w", err)
 	}
@@ -1098,7 +1121,7 @@ func (h *Handler) ListSnapshots(ctx context.Context, documentID string) (*Snapsh
 			NextPageKey:  nextPageKey,
 		}.QueryParams())
 
-		resp, err := req.Get(fmt.Sprintf("/platform/document/v1/documents/%s/snapshots", documentID))
+		resp, err := req.Get(fmt.Sprintf("/platform/document/v1/documents/%s/snapshots", url.PathEscape(documentID)))
 		if err != nil {
 			return nil, fmt.Errorf("failed to list snapshots: %w", err)
 		}
@@ -1129,7 +1152,7 @@ func (h *Handler) ListSnapshots(ctx context.Context, documentID string) (*Snapsh
 // GetSnapshot retrieves metadata for a specific snapshot
 func (h *Handler) GetSnapshot(ctx context.Context, documentID string, version int) (*Snapshot, error) {
 	resp, err := h.client.HTTP().R().SetContext(ctx).
-		Get(fmt.Sprintf("/platform/document/v1/documents/%s/snapshots/%d", documentID, version))
+		Get(fmt.Sprintf("/platform/document/v1/documents/%s/snapshots/%d", url.PathEscape(documentID), version))
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get snapshot: %w", err)
@@ -1150,7 +1173,7 @@ func (h *Handler) GetSnapshot(ctx context.Context, documentID string, version in
 // RestoreSnapshot restores a document to a specific snapshot version
 func (h *Handler) RestoreSnapshot(ctx context.Context, documentID string, version int) (*DocumentMetadata, error) {
 	resp, err := h.client.HTTP().R().SetContext(ctx).
-		Post(fmt.Sprintf("/platform/document/v1/documents/%s/snapshots/%d:restore", documentID, version))
+		Post(fmt.Sprintf("/platform/document/v1/documents/%s/snapshots/%d:restore", url.PathEscape(documentID), version))
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to restore snapshot: %w", err)
@@ -1173,7 +1196,7 @@ func (h *Handler) RestoreSnapshot(ctx context.Context, documentID string, versio
 // DeleteSnapshot deletes a specific snapshot
 func (h *Handler) DeleteSnapshot(ctx context.Context, documentID string, version int) error {
 	resp, err := h.client.HTTP().R().SetContext(ctx).
-		Delete(fmt.Sprintf("/platform/document/v1/documents/%s/snapshots/%d", documentID, version))
+		Delete(fmt.Sprintf("/platform/document/v1/documents/%s/snapshots/%d", url.PathEscape(documentID), version))
 
 	if err != nil {
 		return fmt.Errorf("failed to delete snapshot: %w", err)
@@ -1190,7 +1213,7 @@ func (h *Handler) DeleteSnapshot(ctx context.Context, documentID string, version
 func (h *Handler) GetAtVersion(ctx context.Context, id string, version int) (*Document, error) {
 	resp, err := h.client.HTTP().R().SetContext(ctx).
 		SetQueryParam("snapshot-version", fmt.Sprintf("%d", version)).
-		Get(fmt.Sprintf("/platform/document/v1/documents/%s", id))
+		Get(fmt.Sprintf("/platform/document/v1/documents/%s", url.PathEscape(id)))
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get document at version: %w", err)

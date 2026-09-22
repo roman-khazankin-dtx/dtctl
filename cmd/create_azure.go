@@ -13,6 +13,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azureconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azuremonitoringconfig"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 var (
@@ -27,6 +28,7 @@ var (
 	createAzureMonitoringConfigCredentials       string
 	createAzureMonitoringConfigLocationFiltering string
 	createAzureMonitoringConfigFeatureSets       string
+	createAzureMonitoringConfigCentral           bool
 )
 
 var createAzureProviderCmd = &cobra.Command{
@@ -100,6 +102,13 @@ Examples:
 			}
 		}
 
+		if dryRun {
+			return newDryRunReport(cmd).
+				Linef("Dry run: would create Azure connection").
+				Field("Name", "%s", createAzureConnectionName).
+				Print()
+		}
+
 		created, err := handler.Create(azureconnection.AzureConnectionCreate{Value: value})
 		if err != nil {
 			return err
@@ -159,27 +168,23 @@ Examples:
 			return fmt.Errorf("failed to determine extension version: %w", err)
 		}
 
-		payload := azuremonitoringconfig.AzureMonitoringConfig{
-			Scope: "integration-azure",
-			Value: azuremonitoringconfig.Value{
-				Enabled:     false,
-				Description: createAzureMonitoringConfigName,
-				Version:     version,
-				Azure: azuremonitoringconfig.AzureConfig{
-					DeploymentScope:           "SUBSCRIPTION",
-					ConfigurationMode:         "ADVANCED",
-					DeploymentMode:            "AUTOMATED",
-					SubscriptionFilteringMode: "INCLUDE",
-					Credentials:               []azuremonitoringconfig.Credential{credential},
-					LocationFiltering:         locations,
-				},
-				FeatureSets: featureSets,
-			},
-		}
+		payload := buildAzureMonitoringConfig(
+			createAzureMonitoringConfigName, version, credential, locations, featureSets,
+			centralEnrichmentIntent(cmd, createAzureMonitoringConfigCentral))
 
 		body, err := json.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("failed to prepare request payload: %w", err)
+		}
+
+		if dryRun {
+			return newDryRunReport(cmd).
+				Linef("Dry run: would create Azure monitoring config (disabled)").
+				Field("Name", "%s", createAzureMonitoringConfigName).
+				Field("Version", "%s", version).
+				Field("Locations", "%d", len(locations)).
+				Field("Feature sets", "%d", len(featureSets)).
+				Print()
 		}
 
 		created, err := monitoringHandler.Create(body)
@@ -191,6 +196,28 @@ Examples:
 		output.PrintInfo("Run 'dtctl enable azure monitoring --name %q' to enable it", createAzureMonitoringConfigName)
 		return nil
 	},
+}
+
+func buildAzureMonitoringConfig(name, version string, credential azuremonitoringconfig.Credential,
+	locations, featureSets []string, central *bool) azuremonitoringconfig.AzureMonitoringConfig {
+	return azuremonitoringconfig.AzureMonitoringConfig{
+		Scope: "integration-azure",
+		Value: azuremonitoringconfig.Value{
+			Enabled:     false,
+			Description: name,
+			Version:     version,
+			Azure: azuremonitoringconfig.AzureConfig{
+				UseIngestEnrichmentConfig: central,
+				DeploymentScope:           "SUBSCRIPTION",
+				ConfigurationMode:         "ADVANCED",
+				DeploymentMode:            "AUTOMATED",
+				SubscriptionFilteringMode: "INCLUDE",
+				Credentials:               []azuremonitoringconfig.Credential{credential},
+				LocationFiltering:         locations,
+			},
+			FeatureSets: featureSets,
+		},
+	}
 }
 
 func printFederatedCreateInstructions(baseURL, objectID, connectionName, issuerOverride string) {
@@ -255,6 +282,11 @@ func init() {
 	createAzureConnectionCmd.Flags().StringVar(&createAzureConnectionDirectoryID, "directoryId", "", "Directory (tenant) ID — clientSecret type only")
 	createAzureConnectionCmd.Flags().StringVar(&createAzureConnectionApplicationID, "applicationId", "", "Application (client) ID — clientSecret type only")
 	createAzureConnectionCmd.Flags().StringVar(&createAzureConnectionClientSecret, "clientSecret", "", "Client secret value — clientSecret type only; prefer passing via env var to keep out of shell history (note: expanded value can still be visible in process arguments)")
+	// Renamed to kebab-case in 1.0 (contrib breaking-changes/cloud-flags-kebab-case.md);
+	// the spelling aliases are removed outright.
+	stability.MarkFlag(createAzureConnectionCmd, "directoryId", stability.Experimental, pre10Since)
+	stability.MarkFlag(createAzureConnectionCmd, "applicationId", stability.Experimental, pre10Since)
+	stability.MarkFlag(createAzureConnectionCmd, "clientSecret", stability.Experimental, pre10Since)
 	createAzureConnectionCmd.Flags().StringVar(&createAzureConnectionIssuer, "issuer", "", "Token issuer URL for federatedIdentityCredential (default: auto-detected from tenant host)")
 	_ = createAzureConnectionCmd.RegisterFlagCompletionFunc("type", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		return []string{
@@ -268,6 +300,20 @@ func init() {
 	createAzureMonitoringConfigCmd.Flags().StringVar(&createAzureMonitoringConfigLocationFiltering, "locationFiltering", "", "Comma-separated locations (default: all from schema)")
 	createAzureMonitoringConfigCmd.Flags().StringVar(&createAzureMonitoringConfigFeatureSets, "featureSets", "", "Comma-separated feature sets (default: all *_essential from schema)")
 	createAzureMonitoringConfigCmd.Flags().StringVar(&createAzureMonitoringConfigFeatureSets, "featuresets", "", "Alias for --featureSets")
+	// Renamed to kebab-case in 1.0 (contrib breaking-changes/cloud-flags-kebab-case.md);
+	// the spelling aliases are removed outright.
+	stability.MarkFlag(createAzureMonitoringConfigCmd, "locationFiltering", stability.Experimental, pre10Since)
+	stability.MarkFlag(createAzureMonitoringConfigCmd, "featureSets", stability.Experimental, pre10Since)
+	stability.MarkFlag(createAzureMonitoringConfigCmd, "featuresets", stability.Experimental, pre10Since)
+	addCentralEnrichmentFlag(createAzureMonitoringConfigCmd, &createAzureMonitoringConfigCentral)
 	_ = createAzureMonitoringConfigCmd.MarkFlagRequired("name")
 	_ = createAzureMonitoringConfigCmd.MarkFlagRequired("credentials")
+}
+
+// Declared stable: the invocation and output contract of these commands is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(createAzureProviderCmd)
+	stability.MarkStable(createAzureConnectionCmd)
+	stability.MarkStable(createAzureMonitoringConfigCmd)
 }

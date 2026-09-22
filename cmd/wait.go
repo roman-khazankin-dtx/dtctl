@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/util/template"
 	"github.com/dynatrace-oss/dtctl/pkg/wait"
 )
@@ -141,10 +142,10 @@ Examples:
 		}
 
 		// Get query execution options (reuse flags from query command)
-		maxResultRecords, _ := cmd.Flags().GetInt64("max-result-records")
-		maxResultBytes, _ := cmd.Flags().GetInt64("max-result-bytes")
-		defaultScanLimitGbytes, _ := cmd.Flags().GetFloat64("default-scan-limit-gbytes")
-		defaultSamplingRatio, _ := cmd.Flags().GetFloat64("default-sampling-ratio")
+		queryLimits, err := resolveQueryLimits(cmd, cfg)
+		if err != nil {
+			return err
+		}
 		fetchTimeoutSeconds, _ := cmd.Flags().GetInt32("fetch-timeout-seconds")
 		defaultTimeframeStart, _ := cmd.Flags().GetString("default-timeframe-start")
 		defaultTimeframeEnd, _ := cmd.Flags().GetString("default-timeframe-end")
@@ -153,10 +154,10 @@ Examples:
 
 		queryOpts := exec.DQLExecuteOptions{
 			OutputFormat:           outputFormat,
-			MaxResultRecords:       maxResultRecords,
-			MaxResultBytes:         maxResultBytes,
-			DefaultScanLimitGbytes: defaultScanLimitGbytes,
-			DefaultSamplingRatio:   defaultSamplingRatio,
+			MaxResultRecords:       queryLimits.MaxResultRecords,
+			MaxResultBytes:         queryLimits.MaxResultBytes,
+			DefaultScanLimitGbytes: queryLimits.ScanLimitGbytes,
+			DefaultSamplingRatio:   queryLimits.SamplingRatio,
 			FetchTimeoutSeconds:    fetchTimeoutSeconds,
 			DefaultTimeframeStart:  defaultTimeframeStart,
 			DefaultTimeframeEnd:    defaultTimeframeEnd,
@@ -184,8 +185,7 @@ Examples:
 		executor := NewDQLExecutorFromConfig(cfg, c)
 		waiter := wait.NewQueryWaiter(executor, waitConfig)
 
-		// Execute wait
-		result, err := waiter.Wait(context.Background())
+		result, err := waiter.Wait(cmdContext(cmd))
 		if err != nil && err != context.DeadlineExceeded {
 			return fmt.Errorf("wait failed: %w", err)
 		}
@@ -237,15 +237,26 @@ func init() {
 	// Output control flags
 	waitQueryCmd.Flags().BoolP("quiet", "q", false, "suppress progress messages")
 	waitQueryCmd.Flags().BoolP("verbose", "v", false, "show detailed progress")
+	// Renamed or removed in 1.0 because it hides a global flag
+	// (contrib breaking-changes/unshadow-global-flags.md).
+	stability.MarkFlag(waitQueryCmd, "verbose", stability.Experimental, pre10Since)
 
 	// Query execution flags (inherited from query command)
 	waitQueryCmd.Flags().Int64("max-result-records", 0, "maximum number of result records")
 	waitQueryCmd.Flags().Int64("max-result-bytes", 0, "maximum result size in bytes")
 	waitQueryCmd.Flags().Float64("default-scan-limit-gbytes", 0, "scan limit in gigabytes")
 	waitQueryCmd.Flags().Float64("default-sampling-ratio", 0, "default sampling ratio")
+	addQueryLimitFlags(waitQueryCmd)
 	waitQueryCmd.Flags().Int32("fetch-timeout-seconds", 0, "time limit for fetching data in seconds")
 	waitQueryCmd.Flags().String("default-timeframe-start", "", "query timeframe start (ISO-8601/RFC3339)")
 	waitQueryCmd.Flags().String("default-timeframe-end", "", "query timeframe end (ISO-8601/RFC3339)")
 	waitQueryCmd.Flags().String("locale", "", "query locale (e.g., 'en_US', 'de_DE')")
 	waitQueryCmd.Flags().String("timezone", "", "query timezone (e.g., 'UTC', 'Europe/Paris')")
+}
+
+// Declared stable: the invocation and output contract of these commands is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(waitCmd)
+	stability.MarkStable(waitQueryCmd)
 }

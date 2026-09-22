@@ -12,6 +12,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/hook"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/anomalydetector"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/awsconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azureconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/gcpconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
@@ -143,6 +144,14 @@ type ApplyOptions struct {
 	Type            string   // document type override (from --type flag); forces generic document handling
 	RequireExisting bool     // fail instead of creating when a document ID is missing (update semantics)
 	Labels          []string // document labels (from --label flags); when non-empty, overrides labels in the payload
+
+	// CreateSnapshot snapshots a document's current state before overwriting it
+	// (from --create-snapshot). Documents only, and only on the update path:
+	// there is nothing to snapshot when the document is being created.
+	CreateSnapshot bool
+	// SnapshotDescription describes the snapshot created by CreateSnapshot
+	// (from --snapshot-description); ignored without CreateSnapshot.
+	SnapshotDescription string
 }
 
 // ResourceType represents the type of resource
@@ -150,6 +159,7 @@ type ResourceType string
 
 const (
 	ResourceWorkflow              ResourceType = "workflow"
+	ResourceSchedulingRule        ResourceType = "scheduling-rule"
 	ResourceDashboard             ResourceType = "dashboard"
 	ResourceNotebook              ResourceType = "notebook"
 	ResourceSLO                   ResourceType = "slo"
@@ -335,6 +345,8 @@ func (a *Applier) applySingle(resourceType ResourceType, jsonData []byte, opts A
 	switch resourceType {
 	case ResourceWorkflow:
 		result, err = a.applyWorkflow(jsonData, opts)
+	case ResourceSchedulingRule:
+		result, err = a.applySchedulingRule(jsonData, opts)
 	case ResourceDashboard:
 		result, err = a.applyDocument(jsonData, "dashboard", opts)
 	case ResourceNotebook:
@@ -522,6 +534,15 @@ func detectResourceType(data []byte) (ResourceType, bool, error) {
 		return ResourceWorkflow, false, nil
 	}
 
+	// Scheduling rules are identified by their mandatory ruleType discriminator,
+	// which is unique to this resource and names the body field that follows.
+	if rt, ok := raw["ruleType"].(string); ok {
+		switch rt {
+		case "rrule", "grouping", "fixed_offset", "relative_offset":
+			return ResourceSchedulingRule, false, nil
+		}
+	}
+
 	// Documents have "metadata" or "content" at root level
 	if _, hasMetadata := raw["metadata"]; hasMetadata {
 		// Further distinguish between dashboard, notebook, and custom types
@@ -621,6 +642,35 @@ func detectResourceType(data []byte) (ResourceType, bool, error) {
 		}
 	}
 
+	// A cloud connection exported before the field projection was fixed carries
+	// only objectId and value — the Settings API list used to strip schemaId and
+	// scope — which leaves the authentication type in the value as the
+	// document's only marker. Without this, the flattened "type" field sends
+	// such a file down the generic document path and an apply creates a document
+	// named after the auth type instead of updating the connection.
+	// See https://github.com/dynatrace-oss/dtctl/issues/509
+	if valueMap, ok := raw["value"].(map[string]interface{}); ok {
+		valueType, _ := valueMap["type"].(string)
+		// The hyperscaler connection schemas are discriminated unions: the value
+		// carries "type" *and* a sub-object named after it. Requiring both is
+		// what keeps this fallback from claiming a foreign settings object whose
+		// value merely happens to have a "type" of, say, "clientSecret" — the
+		// connection appliers re-marshal the value through their own struct and
+		// would silently drop every field that struct does not model.
+		if _, hasDiscriminant := valueMap[valueType]; hasDiscriminant {
+			switch valueType {
+			case azureconnection.TypeFederatedIdentityCredential, azureconnection.TypeClientSecret:
+				return ResourceAzureConnection, false, nil
+			case gcpconnection.TypeServiceAccountImpersonation:
+				return ResourceGCPConnection, false, nil
+			case awsconnection.TypeRoleBased:
+				// dtctl has no AWS connection applier: an AWS connection is a plain
+				// Settings object, and the settings path updates it by objectId.
+				return ResourceSettings, false, nil
+			}
+		}
+	}
+
 	// Anomaly Detector detection (flattened format): "analyzer" with "name" subfield + "eventTemplate"
 	if analyzerRaw, hasAnalyzer := raw["analyzer"]; hasAnalyzer {
 		if _, hasEventTemplate := raw["eventTemplate"]; hasEventTemplate {
@@ -687,6 +737,27 @@ func (a *Applier) dryRun(resourceType ResourceType, data []byte, opts ApplyOptio
 		return a.dryRunExtensionConfig(doc)
 	}
 
+	// Anomaly detectors are validated against the schema server-side
+	if resourceType == ResourceAnomalyDetector {
+		return a.dryRunAnomalyDetector(data)
+	}
+
+	// Cloud resources resolve create vs update from "objectId" plus a lookup of
+	// the live list by name, so each has its own dry run that repeats exactly
+	// that resolution. See https://github.com/dynatrace-oss/dtctl/issues/509
+	switch resourceType {
+	case ResourceAWSMonitoringConfig:
+		return a.dryRunAWSMonitoringConfig(data)
+	case ResourceAzureMonitoringConfig:
+		return a.dryRunAzureMonitoringConfig(data)
+	case ResourceGCPMonitoringConfig:
+		return a.dryRunGCPMonitoringConfig(data)
+	case ResourceAzureConnection:
+		return a.dryRunAzureConnection(doc)
+	case ResourceGCPConnection:
+		return a.dryRunGCPConnection(doc)
+	}
+
 	// For other resources, return basic info
 	id, _ := doc["id"].(string)
 	name, _ := doc["name"].(string)
@@ -694,15 +765,13 @@ func (a *Applier) dryRun(resourceType ResourceType, data []byte, opts ApplyOptio
 		name, _ = doc["title"].(string)
 	}
 
-	// Settings objects never carry an "id" field — they use "objectId" (camelCase)
-	// or "objectid" (lowercase). Check those fields so that dry-run agrees with
-	// actual apply for settings resources.
-	// See https://github.com/dynatrace-oss/dtctl/issues/256
-	if id == "" && resourceType == ResourceSettings {
-		id, _ = doc["objectId"].(string)
-		if id == "" {
-			id, _ = doc["objectid"].(string)
-		}
+	// Settings-style objects never carry an "id" field — they use "objectId"
+	// (camelCase) or "objectid" (lowercase). Read those so that dry-run agrees
+	// with actual apply for every resource that identifies itself that way, not
+	// just for the "settings" type.
+	// See https://github.com/dynatrace-oss/dtctl/issues/256 and /issues/509
+	if id == "" {
+		id = objectIDFromDoc(doc)
 	}
 
 	action := ActionCreated // assume create unless we can prove otherwise
@@ -718,6 +787,37 @@ func (a *Applier) dryRun(resourceType ResourceType, data []byte, opts ApplyOptio
 			Name:         name,
 		},
 	}, nil
+}
+
+// objectIDFromDoc reads the settings-style object id out of a decoded payload.
+// The field is spelled "objectId" by the API and "objectid" by a YAML
+// round-trip, and neither is ever an "id".
+func objectIDFromDoc(doc map[string]interface{}) string {
+	if id, _ := doc["objectId"].(string); id != "" {
+		return id
+	}
+	id, _ := doc["objectid"].(string)
+	return id
+}
+
+// monitoringConfigDryRun builds the dry-run result for a cloud monitoring
+// config once its apply path's create-vs-update resolution has run: a resolved
+// objectID means the apply issues a PUT.
+func monitoringConfigDryRun(resourceType, objectID, description, scope string, warnings []string) *DryRunResult {
+	action := ActionCreated
+	if objectID != "" {
+		action = ActionUpdated
+	}
+	return &DryRunResult{
+		ApplyResultBase: ApplyResultBase{
+			Action:       action,
+			ResourceType: resourceType,
+			ID:           objectID,
+			Name:         description,
+			Warnings:     warnings,
+		},
+		Scope: scope,
+	}
 }
 
 // capitalize capitalizes the first letter of a string

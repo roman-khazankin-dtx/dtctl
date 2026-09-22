@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 	"github.com/dynatrace-oss/dtctl/pkg/diagnostic"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 // ctxCmd is a top-level shortcut for context management.
@@ -158,13 +160,7 @@ Examples:
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		environment, _ := cmd.Flags().GetString("environment")
-		tokenRef, _ := cmd.Flags().GetString("token-ref")
-		safetyLevel, _ := cmd.Flags().GetString("safety-level")
-		description, _ := cmd.Flags().GetString("description")
-		profile, _ := cmd.Flags().GetString("profile")
-
-		return setContext(args[0], environment, tokenRef, safetyLevel, description, profile)
+		return setContext(args[0], contextSettingsFromFlags(cmd))
 	},
 }
 
@@ -189,7 +185,8 @@ var ctxDeleteCmd = &cobra.Command{
 		return names, cobra.ShellCompDirectiveNoFileComp
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return deleteContext(args[0])
+		deleteCredential, _ := cmd.Flags().GetBool("delete-credentials")
+		return deleteContext(cmd, args[0], deleteCredential)
 	},
 }
 
@@ -206,11 +203,14 @@ func listContexts() error {
 		if nc.Name == cfg.CurrentContext {
 			current = "*"
 		}
+		// Show what is resolved and enforced, not what the file happens to
+		// say: a local .dtctl.yaml may name its environment through ${VAR}
+		// and has its declared safety level clamped to the global binding.
 		items = append(items, ContextListItem{
 			Current:     current,
 			Name:        nc.Name,
 			Environment: nc.Context.Environment,
-			SafetyLevel: nc.Context.SafetyLevel.String(),
+			SafetyLevel: cfg.EffectiveSafetyLevelFor(&nc.Context).String(),
 			Profile:     nc.Context.Profile,
 			Description: nc.Context.Description,
 		})
@@ -274,13 +274,17 @@ func describeContext(name string) error {
 		currentMark = " (current)"
 	}
 
+	// Report the enforced level, which for a local .dtctl.yaml is clamped to
+	// the global binding of its token-ref rather than what the file declares.
+	level := cfg.EffectiveSafetyLevelFor(&found.Context)
+
 	const w = 14
 	output.DescribeKV("Name:", w, "%s%s", found.Name, currentMark)
 	output.DescribeKV("Environment:", w, "%s", found.Context.Environment)
 	output.DescribeKV("Token-Ref:", w, "%s", found.Context.TokenRef)
-	output.DescribeKV("Safety Level:", w, "%s", found.Context.GetEffectiveSafetyLevel())
+	output.DescribeKV("Safety Level:", w, "%s", level)
 
-	switch found.Context.GetEffectiveSafetyLevel() {
+	switch level {
 	case config.SafetyLevelReadOnly:
 		fmt.Printf("%*s(No modifications allowed)\n", w, "")
 	case config.SafetyLevelReadWriteMine:
@@ -303,9 +307,77 @@ func describeContext(name string) error {
 	return nil
 }
 
+// contextSettings is the set of context fields `ctx set` / `config set-context`
+// accept. Grouped into a struct rather than passed positionally because the
+// two commands share the whole list and it keeps growing — the stability floor
+// is the third axis to land on a context, after safety level and profile.
+type contextSettings struct {
+	environment string
+	tokenRef    string
+	safetyLevel string
+	description string
+	profile     string
+	// minStability is the context's stability floor. Empty leaves it unset,
+	// which resolves to the default floor.
+	minStability string
+	// stabilityExceptions are individual commands and flags admitted below the
+	// floor. nil leaves the existing list untouched (the flag was not passed);
+	// a non-nil empty slice clears it.
+	stabilityExceptions []string
+	// global writes to the global config instead of a discovered .dtctl.yaml.
+	global bool
+}
+
+// contextSettingsFromFlags reads the shared context flags off a command. Both
+// `ctx set` and `config set-context` declare the same flag set, so both read it
+// the same way.
+func contextSettingsFromFlags(cmd *cobra.Command) contextSettings {
+	s := contextSettings{}
+	s.environment, _ = cmd.Flags().GetString("environment")
+	s.tokenRef, _ = cmd.Flags().GetString("token-ref")
+	s.safetyLevel, _ = cmd.Flags().GetString("safety-level")
+	s.description, _ = cmd.Flags().GetString("description")
+	s.profile, _ = cmd.Flags().GetString("profile")
+	s.minStability, _ = cmd.Flags().GetString("min-stability")
+	s.global, _ = cmd.Flags().GetBool("global")
+	if cmd.Flags().Changed("stability-exception") {
+		vals, _ := cmd.Flags().GetStringArray("stability-exception")
+		// Non-nil even when empty: `--stability-exception ""` is how a caller
+		// withdraws every exception, which must be distinguishable from not
+		// having passed the flag at all.
+		s.stabilityExceptions = make([]string, 0, len(vals))
+		for _, v := range vals {
+			if v = strings.TrimSpace(v); v != "" {
+				s.stabilityExceptions = append(s.stabilityExceptions, v)
+			}
+		}
+	}
+	return s
+}
+
+// addContextFlags declares the shared context flags on a command.
+func addContextFlags(cmd *cobra.Command) {
+	cmd.Flags().String("environment", "", "environment URL")
+	cmd.Flags().String("token-ref", "", "token reference name")
+	cmd.Flags().String("safety-level", "", "safety level (readonly, readwrite-mine, readwrite-all, dangerously-unrestricted)")
+	cmd.Flags().String("description", "", "human-readable description for this context")
+	cmd.Flags().String("profile", "", "command profile to bind (restricts the visible command surface; e.g. query, investigate, full)")
+	cmd.Flags().String("min-stability", "", "stability floor: weakest contract a command or flag may offer here (stable, experimental)")
+	cmd.Flags().StringArray("stability-exception", nil, "admit one below-floor command or flag (repeatable; e.g. 'inventory' or 'query --decode-snapshots')")
+	cmd.Flags().Bool("global", false, "write to the global config instead of a discovered .dtctl.yaml")
+	_ = cmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
+	_ = cmd.RegisterFlagCompletionFunc("min-stability", completeStabilityLevels)
+}
+
 // setContext creates or updates a named context (shared logic)
-func setContext(name, environment, tokenRef, safetyLevel, description, profile string) error {
-	cfg, err := loadConfigRaw()
+func setContext(name string, s contextSettings) error {
+	environment := s.environment
+	tokenRef := s.tokenRef
+	safetyLevel := s.safetyLevel
+	description := s.description
+	profile := s.profile
+	global := s.global
+	cfg, err := loadConfigForWrite(global)
 	if err != nil {
 		cfg = config.NewConfig()
 	}
@@ -353,10 +425,22 @@ func setContext(name, environment, tokenRef, safetyLevel, description, profile s
 		output.PrintWarning("profile %q is not defined yet; define it under 'profiles:' or it will error when the context is used", profile)
 	}
 
+	// An invalid floor is a hard error, not a silent fallback: for a floor,
+	// falling back would *widen* the surface the context accepts.
+	minStability, err := config.ParseStabilityLevel(s.minStability)
+	if err != nil {
+		return err
+	}
+	if _, err := stability.ParseExceptions(s.stabilityExceptions); err != nil {
+		return err
+	}
+
 	opts := &config.ContextOptions{
-		SafetyLevel: config.SafetyLevel(safetyLevel),
-		Description: description,
-		Profile:     profile,
+		SafetyLevel:         config.SafetyLevel(safetyLevel),
+		Description:         description,
+		Profile:             profile,
+		MinStability:        minStability,
+		StabilityExceptions: s.stabilityExceptions,
 	}
 
 	cfg.SetContextWithOptions(name, environment, tokenRef, opts)
@@ -366,7 +450,7 @@ func setContext(name, environment, tokenRef, safetyLevel, description, profile s
 	// expectation is that the named context becomes current afterward.
 	cfg.CurrentContext = name
 
-	if err := saveConfig(cfg); err != nil {
+	if err := saveConfigForWrite(cfg, global); err != nil {
 		return err
 	}
 
@@ -375,19 +459,33 @@ func setContext(name, environment, tokenRef, safetyLevel, description, profile s
 	} else {
 		output.PrintSuccess("Context %q created and set as current", name)
 	}
+	if !global {
+		warnLocalWriteTarget(fmt.Sprintf("Context %q", name))
+	}
 	return nil
 }
 
-// deleteContext deletes a named context (shared logic)
-func deleteContext(name string) error {
-	cfg, err := loadConfigRaw()
+// deleteContext deletes a named context (shared logic).
+//
+// deleteCredential also removes the credential the context references. It is
+// opt-in because a token ref can be shared between contexts, but the default
+// leaves a usable credential behind, so that case is called out explicitly —
+// a silently orphaned token is what sends callers to the OS keychain tooling.
+func deleteContext(cmd *cobra.Command, name string, deleteCredential bool) error {
+	// loadRawConfig, not loadConfigRaw: this command rewrites the config file,
+	// and the expanding loader would resolve every ${VAR} in it and save the
+	// resolved values back — writing credentials into the file in plaintext.
+	// See CONFIG_CONTRACT.md, "Write rules".
+	cfg, err := loadRawConfig()
 	if err != nil {
 		return err
 	}
 
+	var tokenRef string
 	found := false
 	for _, nc := range cfg.Contexts {
 		if nc.Name == name {
+			tokenRef = nc.Context.TokenRef
 			found = true
 			break
 		}
@@ -395,6 +493,40 @@ func deleteContext(name string) error {
 
 	if !found {
 		return fmt.Errorf("context %q not found", name)
+	}
+
+	// Validated ahead of the dry-run return so a preview reports the same
+	// refusal the real run would, rather than promising a deletion that fails.
+	if deleteCredential && tokenRef != "" {
+		sharedWith := 0
+		for _, nc := range cfg.Contexts {
+			if nc.Name != name && nc.Context.TokenRef == tokenRef {
+				sharedWith++
+			}
+		}
+		if sharedWith > 0 {
+			return fmt.Errorf("credential %q is shared with %d other context(s); "+
+				"delete those first, or run 'dtctl config delete-credentials %s' to remove it for all of them",
+				tokenRef, sharedWith, tokenRef)
+		}
+	}
+
+	if dryRun {
+		report := newDryRunReport(cmd).
+			Linef("Dry run: would delete context %q", name).
+			Detail("context", "%s", name)
+		if deleteCredential && tokenRef != "" {
+			report.
+				Linef("Would also delete credentials %q", tokenRef).
+				Detail("credentials", "%s", tokenRef)
+		}
+		return report.Print()
+	}
+
+	if deleteCredential && tokenRef != "" {
+		if err := cfg.DeleteToken(tokenRef); err != nil {
+			return fmt.Errorf("failed to delete credential %q: %w", tokenRef, err)
+		}
 	}
 
 	if err := cfg.DeleteContext(name); err != nil {
@@ -411,6 +543,15 @@ func deleteContext(name string) error {
 	}
 
 	output.PrintSuccess("Context %q deleted", name)
+
+	switch {
+	case tokenRef == "":
+		// Nothing was referenced, so nothing can be left behind.
+	case deleteCredential:
+		output.PrintSuccess("Credentials %q deleted", tokenRef)
+	default:
+		output.PrintInfo("Credentials %q were kept. Remove them with 'dtctl config delete-credentials %s'.", tokenRef, tokenRef)
+	}
 	return nil
 }
 
@@ -423,11 +564,32 @@ func init() {
 	ctxCmd.AddCommand(ctxSetCmd)
 	ctxCmd.AddCommand(ctxDeleteCmd)
 
+	// Flags for ctx delete
+	ctxDeleteCmd.Flags().Bool("delete-credentials", false,
+		"also delete the credential the context references (leaves it in place otherwise)")
+
 	// Flags for ctx set
-	ctxSetCmd.Flags().String("environment", "", "environment URL")
-	ctxSetCmd.Flags().String("token-ref", "", "token reference name")
-	ctxSetCmd.Flags().String("safety-level", "", "safety level (readonly, readwrite-mine, readwrite-all, dangerously-unrestricted)")
-	ctxSetCmd.Flags().String("description", "", "human-readable description for this context")
-	ctxSetCmd.Flags().String("profile", "", "command profile to bind (restricts the visible command surface; e.g. query, investigate, full)")
+	addContextFlags(ctxSetCmd)
 	_ = ctxSetCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
+}
+
+// completeStabilityLevels provides shell completion for a --min-stability flag.
+// Development is deliberately absent: it is not a floor anyone sets, it is the
+// tier a feature must be opted into individually.
+func completeStabilityLevels(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+	return []string{
+		string(config.StabilityStable),
+		string(config.StabilityExperimental),
+	}, cobra.ShellCompDirectiveNoFileComp
+}
+
+// Declared stable: the invocation and output contract of these commands is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(ctxCmd)
+	stability.MarkStable(ctxCurrentCmd)
+	stability.MarkStable(ctxDeleteCmd)
+	stability.MarkStable(ctxDescribeCmd)
+	stability.MarkStable(ctxSetCmd)
+	stability.MarkStable(ctxTokenCmd)
 }

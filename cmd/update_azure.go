@@ -11,6 +11,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azureconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azuremonitoringconfig"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 var (
@@ -111,6 +112,13 @@ Examples:
 			return fmt.Errorf("unsupported azure connection type %q", value.Type)
 		}
 
+		if dryRun {
+			return newDryRunReport(cmd).
+				Linef("Dry run: would update Azure connection %s", existing.ObjectID).
+				Detail("object_id", "%s", existing.ObjectID).
+				Print()
+		}
+
 		updated, err := handler.Update(existing.ObjectID, value)
 		if err != nil {
 			return err
@@ -187,6 +195,15 @@ Examples:
 			return fmt.Errorf("failed to prepare request payload: %w", err)
 		}
 
+		if dryRun {
+			return newDryRunReport(cmd).
+				Linef("Dry run: would update Azure monitoring config %s", existing.ObjectID).
+				Detail("object_id", "%s", existing.ObjectID).
+				Field("Locations", "%d", len(value.Azure.LocationFiltering)).
+				Field("Feature sets", "%d", len(value.FeatureSets)).
+				Print()
+		}
+
 		updated, err := handler.Update(existing.ObjectID, body)
 		if err != nil {
 			return err
@@ -210,9 +227,40 @@ func init() {
 	updateAzureConnectionCmd.Flags().StringVar(&updateAzureConnectionApplicationID, "applicationID", "", "Alias for --applicationId")
 	updateAzureConnectionCmd.Flags().StringVar(&updateAzureConnectionApplicationID, "aplicationID", "", "Compatibility alias for typo --aplicationID")
 	updateAzureConnectionCmd.Flags().StringVar(&updateAzureConnectionClientSecret, "clientSecret", "", "Client secret value (clientSecret type only); prefer passing via env var to keep out of shell history (note: expanded value can still be visible in process arguments)")
+	// Every path through this command needs a flag the rename takes away
+	// (every one of --directoryId, --applicationId and --clientSecret), so at a stable floor it has no usable
+	// invocation left. Marking the command says that plainly instead of
+	// hiding the flags and then failing on a "required" flag help no
+	// longer lists.
+	stability.Mark(updateAzureConnectionCmd, stability.Experimental, pre10Since)
+	// Renamed to kebab-case in 1.0 (contrib breaking-changes/cloud-flags-kebab-case.md);
+	// the spelling aliases are removed outright.
+	stability.MarkFlag(updateAzureConnectionCmd, "directoryId", stability.Experimental, pre10Since)
+	stability.MarkFlag(updateAzureConnectionCmd, "directoryID", stability.Experimental, pre10Since)
+	stability.MarkFlag(updateAzureConnectionCmd, "applicationId", stability.Experimental, pre10Since)
+	stability.MarkFlag(updateAzureConnectionCmd, "applicationID", stability.Experimental, pre10Since)
+	stability.MarkFlag(updateAzureConnectionCmd, "aplicationID", stability.Experimental, pre10Since)
+	stability.MarkFlag(updateAzureConnectionCmd, "clientSecret", stability.Experimental, pre10Since)
 
 	updateAzureMonitoringConfigCmd.Flags().StringVar(&updateAzureMonitoringConfigName, "name", "", "Monitoring config name/description (used when ID argument is not provided)")
 	updateAzureMonitoringConfigCmd.Flags().StringVar(&updateAzureMonitoringConfigLocationFiltering, "locationFiltering", "", "Comma-separated locations")
 	updateAzureMonitoringConfigCmd.Flags().StringVar(&updateAzureMonitoringConfigFeatureSets, "featureSets", "", "Comma-separated feature sets")
 	updateAzureMonitoringConfigCmd.Flags().StringVar(&updateAzureMonitoringConfigFeatureSets, "featuresets", "", "Alias for --featureSets")
+	// Every path through this command needs a flag the rename takes away
+	// (both --locationFiltering and --featureSets), so at a stable floor it has no usable
+	// invocation left. Marking the command says that plainly instead of
+	// hiding the flags and then failing on a "required" flag help no
+	// longer lists.
+	stability.Mark(updateAzureMonitoringConfigCmd, stability.Experimental, pre10Since)
+	// Renamed to kebab-case in 1.0 (contrib breaking-changes/cloud-flags-kebab-case.md);
+	// the spelling aliases are removed outright.
+	stability.MarkFlag(updateAzureMonitoringConfigCmd, "locationFiltering", stability.Experimental, pre10Since)
+	stability.MarkFlag(updateAzureMonitoringConfigCmd, "featureSets", stability.Experimental, pre10Since)
+	stability.MarkFlag(updateAzureMonitoringConfigCmd, "featuresets", stability.Experimental, pre10Since)
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(updateAzureProviderCmd)
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/settings"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/util/format"
 	"github.com/dynatrace-oss/dtctl/pkg/util/template"
 	"github.com/dynatrace-oss/dtctl/pkg/vfs"
@@ -84,13 +85,15 @@ Examples:
 
 		// Handle dry-run
 		if dryRun {
-			fmt.Printf("Dry run: would create settings object\n")
-			fmt.Printf("Schema: %s\n", schemaID)
-			fmt.Printf("Scope: %s\n", scope)
-			fmt.Println("---")
-			fmt.Println(string(jsonData))
-			fmt.Println("---")
-			return nil
+			return newDryRunReport(cmd).
+				Linef("Dry run: would create settings object").
+				Field("Schema", "%s", schemaID).
+				Field("Scope", "%s", scope).
+				Linef("---").
+				Linef("%s", string(jsonData)).
+				Linef("---").
+				Payload(jsonData).
+				Print()
 		}
 
 		req := settings.SettingsObjectCreate{
@@ -139,4 +142,10 @@ func init() {
 	_ = createSettingsCmd.MarkFlagRequired("file")
 	_ = createSettingsCmd.MarkFlagRequired("schema")
 	_ = createSettingsCmd.MarkFlagRequired("scope")
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
+	stability.MarkStable(createSettingsCmd)
 }
