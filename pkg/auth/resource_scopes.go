@@ -105,10 +105,11 @@ var ResourceScopes = map[string]AccessScopes{
 	// (/platform/app-engine/function-executor/v1/sdk-versions).
 	"sdk-version": {Read: []string{"app-engine:apps:run"}},
 
-	// Code-level analysis (/platform-reserved/codelevelanalysis/v0.1)
-	// Needs storage:entities:read to resolve the entity and storage:profiles:read
-	// to read the profiling samples the analysis is built from.
-	"profile": {Run: []string{"storage:entities:read", "storage:profiles:read"}},
+	// Code-level analysis (/platform-reserved/codelevelanalysis/v0.1) — the
+	// `exec profiling` namespace (hotspots/memory subcommands). Needs
+	// storage:entities:read to resolve the entity and storage:profiles:read to
+	// read the profiling samples the analysis is built from.
+	"profiling": {Run: []string{"storage:entities:read", "storage:profiles:read"}},
 
 	// Davis AI
 	"analyzer": {Read: []string{"davis:analyzers:read"}, Run: []string{"davis:analyzers:execute"}},

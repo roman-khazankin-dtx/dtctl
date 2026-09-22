@@ -137,6 +137,11 @@ func dataNodes(result map[string]interface{}) []interface{} {
 // own code. The API flag is counterintuitively named: apiInfo.systemApi == true means
 // application code; false means built-in/library frames (JRE, Spring, Apache) AND the
 // Dynatrace OneAgent itself (com.dynatrace.agent.*) — exactly the noise --app-only drops.
+//
+// Caveat: the classification is the API's, and it is not uniform across languages.
+// On .NET the OneAgent's own frames (Dynatrace.OneAgent.*) are flagged systemApi==true,
+// so --app-only keeps them; on Java the agent frames are correctly excluded. We take
+// the flag as-is rather than second-guessing it per language.
 func nodeIsApp(n map[string]interface{}) bool {
 	ai, _ := n["apiInfo"].(map[string]interface{})
 	if ai == nil {
