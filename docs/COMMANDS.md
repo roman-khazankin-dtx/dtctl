@@ -304,6 +304,7 @@ Subcommands:
 | Subcommand | Description |
 | --- | --- |
 | copilot | Chat with Davis CoPilot |
+| profiling | [Experimental] Run a code-level profiling analysis on a process |
 
 
 ## find

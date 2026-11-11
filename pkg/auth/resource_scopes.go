@@ -160,6 +160,12 @@ var ResourceScopes = map[string]AccessScopes{
 	// (/platform/app-engine/function-executor/v1/sdk-versions).
 	"sdk-version": {Read: []string{"app-engine:apps:run"}},
 
+	// Code-level analysis (/platform-reserved/codelevelanalysis/v0.1) — the
+	// `exec profiling` namespace (hotspots/memory subcommands). Needs
+	// storage:entities:read to resolve the entity and storage:profiles:read to
+	// read the profiling samples the analysis is built from.
+	"profiling": {Run: []string{"storage:entities:read", "storage:profiles:read"}},
+
 	// Davis AI
 	"analyzer": {Read: []string{"davis:analyzers:read"}, Run: []string{"davis:analyzers:execute"}},
 	"copilot":  {Run: []string{"davis-copilot:conversations:execute"}},
@@ -356,9 +362,9 @@ var grailExtendedReadScopes = []string{
 	"storage:user.replays:read",
 	"storage:fieldsets:read",
 	"storage:fieldset-definitions:read",
-	// Code-level profiling samples (the code-level analysis API). No built-in
-	// command reads them yet; requesting the scope at login is what lets
-	// `exec api` and dtctl-* plugins that reuse the dtctl session reach them.
+	// Code-level profiling samples, read by `exec profiling`. Requesting the
+	// scope at login also lets `exec api` and dtctl-* plugins that reuse the
+	// dtctl session reach them.
 	"storage:profiles:read",
 }
 

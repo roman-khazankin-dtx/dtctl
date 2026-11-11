@@ -54,7 +54,7 @@ Resources and aliases are discoverable via `dtctl commands` (run at init). They 
 |------|---------|
 | get / describe | `dtctl get workflows --mine` · `dtctl describe workflow <id>` |
 | apply / edit / delete | `dtctl apply -f wf.yaml --set env=prod` · `dtctl delete workflow <id>` |
-| exec | `dtctl exec function <id> --payload '{...}'` · `dtctl exec analyzer <id> --input '{...}'` (also workflow, copilot) |
+| exec | `dtctl exec function <id> --payload '{...}'` · `dtctl exec analyzer <id> --input '{...}'` · `dtctl exec profiling hotspots PROCESS_GROUP_INSTANCE-xxx` (experimental code-level profiling on PG/PGI; kinds: hotspots, memory; folded stacks with per-stack running/lock/io/wait; optional `--leaf-type total\|service\|background`, `--app-only`, `--limit`, `--default-timeframe-start now()-1h`) (also workflow, copilot) |
 | query / wait | `dtctl query "fetch logs \| limit 10"` · `dtctl wait query ... --for=any` |
 | inspect | `dtctl inspect <file> --head 20` · `--tail`, `--page --offset N --limit M`, `--fields a,b`, `--schema`, `--stats`, `--sample N`, `--list` (row access over a spilled result file — no Grail re-query) |
 | logs / history / restore | `dtctl logs workflow-execution <id>` · `dtctl history dashboard <id>` · `dtctl restore dashboard <id> 3` (version is positional; snapshots exist only if the update passed `--create-snapshot`) |

@@ -423,6 +423,8 @@ Generated reference of the API token scopes each resource requires, grouped by s
 | analyzer | `davis:analyzers:execute` |
 | copilot | `davis-copilot:conversations:execute` |
 | function | `app-engine:functions:run` |
+| profiling | `storage:entities:read` |
+| profiling | `storage:profiles:read` |
 | workflow | `automation:workflows:run` |
 
 ### write
