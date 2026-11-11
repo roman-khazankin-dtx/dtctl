@@ -16,23 +16,22 @@ dtctl exec profiling memory   <entity> [flags]
 
 ## Entities
 
-Only **process-level** entities are accepted — `PROCESS_GROUP` and
-`PROCESS_GROUP_INSTANCE`. `SERVICE` entities are **not** eligible.
+Pass a **process** id, `PROCESS-xxx`. `SERVICE` ids are **not** eligible.
 
-A modern `PROCESS-xxx` id is accepted and rewritten to its
+The API speaks the classic entity vocabulary, so dtctl rewrites `PROCESS-xxx` to its
 `PROCESS_GROUP_INSTANCE-xxx` form (same entity, same id suffix; the API 404s on the
-`PROCESS-` prefix). The rewrite is intentional — this command speaks the classic
-entity vocabulary because the API does.
+`PROCESS-` prefix). Classic ids work as well: `PROCESS_GROUP_INSTANCE-xxx`, and
+`PROCESS_GROUP-xxx` for a whole process group.
 
-Find eligible ids from a modern `PROCESS` node:
+Find process ids:
 
 ```
 dtctl query 'smartscapeNodes PROCESS
-  | fields id, id_classic, dt.process_group.id, dt.process_group.detected_name'
+  | fields id, dt.process_group.detected_name, dt.process_group.id'
 ```
 
-- `id_classic` is the `PROCESS_GROUP_INSTANCE-xxx` id.
-- `dt.process_group.id` is the `PROCESS_GROUP-xxx` id.
+- `id` is the `PROCESS-xxx` id to pass.
+- `dt.process_group.id` is its `PROCESS_GROUP-xxx` id.
 
 ## Output
 
@@ -79,10 +78,10 @@ dtctl exec profiling hotspots PROCESS-ABC123 \
   --default-timeframe-start 'now()-21h' --default-timeframe-end 'now()-19h'
 
 # Localize why a specific endpoint is hot
-dtctl exec profiling hotspots PROCESS_GROUP-ABC123 --leaf-type service --limit 5
+dtctl exec profiling hotspots PROCESS-ABC123 --leaf-type service --limit 5
 
 # Memory allocation pressure, only survivors (the leak tell)
-dtctl exec profiling memory PROCESS_GROUP-DEF456 --survivors-only
+dtctl exec profiling memory PROCESS-DEF456 --survivors-only
 
 # Raw result for scripting
 dtctl exec profiling hotspots PROCESS-ABC123 -o json --jq '.result.dataNodes | length'

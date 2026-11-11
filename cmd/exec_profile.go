@@ -33,11 +33,11 @@ const (
 )
 
 // profilingFindIDsQuery lists eligible entity ids.
-const profilingFindIDsQuery = `dtctl query 'smartscapeNodes PROCESS | fields id, id_classic, dt.process_group.id, dt.process_group.detected_name'`
+const profilingFindIDsQuery = `dtctl query 'smartscapeNodes PROCESS | fields id, dt.process_group.detected_name, dt.process_group.id'`
 
 // profilingFindIDsHint tells the caller how to find an eligible entity id.
 const profilingFindIDsHint = profilingFindIDsQuery + `
-  # id_classic is the PROCESS_GROUP_INSTANCE-xxx id; dt.process_group.id is the PROCESS_GROUP-xxx id`
+  # id is the PROCESS-xxx id to pass; dt.process_group.id is its PROCESS_GROUP-xxx id`
 
 // profilingExperimentalNotice opens every profiling help page, so whoever
 // reads the help of any profiling command sees it before anything else.
@@ -73,13 +73,13 @@ Kinds:
   hotspots  Method CPU hotspots (per-stack thread-state counts include lock/IO/wait)
   memory    Memory allocation analysis (allocation pressure, not live heap)
 
-Entities: only PROCESS_GROUP and PROCESS_GROUP_INSTANCE are accepted — the API
-does not accept SERVICE. This command speaks that classic entity vocabulary
-because the API does; it will change when the API's successor lands. A modern
-PROCESS-xxx id is accepted and rewritten to its PROCESS_GROUP_INSTANCE-xxx form
-(same entity, same id suffix).
+Entities: pass a process id, PROCESS-xxx. SERVICE ids are not accepted. The API
+speaks the classic entity vocabulary, so dtctl rewrites PROCESS-xxx to its
+PROCESS_GROUP_INSTANCE-xxx form (same entity, same id suffix). Classic ids work
+as well: PROCESS_GROUP_INSTANCE-xxx, and PROCESS_GROUP-xxx for a whole process
+group.
 
-Find eligible ids:
+Find process ids:
   ` + profilingFindIDsHint + `
 
 Timeframe: --default-timeframe-start/--default-timeframe-end (ISO-8601/RFC3339,
@@ -116,14 +116,14 @@ func newProfilingHotspotsCmd() *cobra.Command {
 	f := &profilingFlags{}
 	c := &cobra.Command{
 		Use:   "hotspots <entity>",
-		Short: "Method CPU hotspots for a process group or instance",
-		Long: `Method CPU hotspots for a PROCESS_GROUP or PROCESS_GROUP_INSTANCE.
+		Short: "Method CPU hotspots for a process",
+		Long: `Method CPU hotspots for a process (PROCESS-xxx).
 
 ` + profilingExperimentalNotice + `
 ` + profilingLeafTypeHelp,
-		Example: `  dtctl exec profiling hotspots PROCESS-ABC123          # rewritten to PGI
-  dtctl exec profiling hotspots PROCESS_GROUP-ABC123 --leaf-type service --limit 5
-  dtctl exec profiling hotspots PROCESS_GROUP_INSTANCE-ABC123 --app-only \
+		Example: `  dtctl exec profiling hotspots PROCESS-ABC123
+  dtctl exec profiling hotspots PROCESS-ABC123 --leaf-type service --limit 5
+  dtctl exec profiling hotspots PROCESS-ABC123 --app-only \
     --default-timeframe-start 'now()-1h'
   # an earlier 2h window
   dtctl exec profiling hotspots PROCESS-ABC123 \
@@ -144,8 +144,8 @@ func newProfilingMemoryCmd() *cobra.Command {
 	f := &profilingFlags{}
 	c := &cobra.Command{
 		Use:   "memory <entity>",
-		Short: "Memory allocation analysis for a process group or instance",
-		Long: `Memory allocation analysis for a PROCESS_GROUP or PROCESS_GROUP_INSTANCE.
+		Short: "Memory allocation analysis for a process",
+		Long: `Memory allocation analysis for a process (PROCESS-xxx).
 
 ` + profilingExperimentalNotice + `
 
@@ -156,8 +156,8 @@ is survived/allocated: a frame whose survivors far exceed its in-window
 allocations is retaining, not churning (the biggest allocator is usually churn).
 NOTE the memory tree is INVERTED vs hotspots: the allocation-site method is at
 the root and its callers hang below as children.`,
-		Example: `  dtctl exec profiling memory PROCESS_GROUP-DEF456
-  dtctl exec profiling memory PROCESS_GROUP-DEF456 --survivors-only`,
+		Example: `  dtctl exec profiling memory PROCESS-DEF456
+  dtctl exec profiling memory PROCESS-DEF456 --survivors-only`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProfiling(cmd, "memory", args[0], f)
@@ -184,7 +184,7 @@ func runProfiling(cmd *cobra.Command, kind, entityID string, f *profilingFlags) 
 	ctx := cmdContext(cmd)
 
 	if !isEligibleProfilingEntity(entityID) {
-		return fmt.Errorf("invalid entity %q: only PROCESS, PROCESS_GROUP, and PROCESS_GROUP_INSTANCE are eligible for profiling (SERVICE is not).\nFind an eligible id:\n  %s", entityID, profilingFindIDsHint)
+		return fmt.Errorf("invalid entity %q: profiling takes a process id, PROCESS-xxx (classic PROCESS_GROUP-xxx and PROCESS_GROUP_INSTANCE-xxx ids work too; SERVICE ids do not).\nFind a process id:\n  %s", entityID, profilingFindIDsHint)
 	}
 	switch f.leafType {
 	case "", profile.LeafTypeTotal, profile.LeafTypeService, profile.LeafTypeBackground:
