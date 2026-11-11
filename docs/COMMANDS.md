@@ -304,6 +304,7 @@ Subcommands:
 | Subcommand | Description |
 | --- | --- |
 | copilot | Chat with Davis CoPilot |
+| profiling | [Experimental] Run a code-level profiling analysis on a process |
 
 
 ## find
@@ -434,18 +435,6 @@ _read-only | access: read_
 | Resource | Required scopes |
 | --- | --- |
 | list | _(none declared)_ |
-
-
-## profiling
-
-[Experimental] Run a code-level profiling analysis on a process
-
-_read-only | access: read_
-
-| Resource | Required scopes |
-| --- | --- |
-| hotspots | `storage:entities:read`, `storage:profiles:read` |
-| memory | `storage:entities:read`, `storage:profiles:read` |
 
 
 ## query

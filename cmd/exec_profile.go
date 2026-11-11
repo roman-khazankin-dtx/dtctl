@@ -14,11 +14,12 @@ import (
 	"github.com/Dynatrace/dtctl/pkg/diagnostic"
 	"github.com/Dynatrace/dtctl/pkg/output"
 	"github.com/Dynatrace/dtctl/pkg/resources/profile"
+	"github.com/Dynatrace/dtctl/pkg/safety"
 	"github.com/Dynatrace/dtctl/pkg/stability"
 	"github.com/Dynatrace/dtctl/sdk/httpclient"
 )
 
-// profilingSince is the release in which `profiling` entered the
+// profilingSince is the release in which `exec profiling` entered the
 // experimental tier. One constant for the whole family.
 const profilingSince = "0.46.0"
 
@@ -38,18 +39,14 @@ const profilingFindIDsQuery = `dtctl query 'smartscapeNodes PROCESS | fields id,
 const profilingFindIDsHint = profilingFindIDsQuery + `
   # id_classic is the PROCESS_GROUP_INSTANCE-xxx id; dt.process_group.id is the PROCESS_GROUP-xxx id`
 
-// profilingCmd is the namespace for code-level profiling analyses.
-var profilingCmd = newProfilingCmd()
+// execProfilingCmd is the namespace for code-level profiling analyses.
+var execProfilingCmd = newExecProfilingCmd()
 
-func init() {
-	rootCmd.AddCommand(profilingCmd)
-}
-
-// newProfilingCmd builds `profiling` with its kind subcommands. The
+// newExecProfilingCmd builds `exec profiling` with its kind subcommands. The
 // kind is a subcommand (hotspots/memory) so each declares only the flags it
 // accepts and cobra rejects nonsensical combinations; the entity is a
 // positional argument.
-func newProfilingCmd() *cobra.Command {
+func newExecProfilingCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "profiling",
 		Short: "Run a code-level profiling analysis on a process",
@@ -120,12 +117,12 @@ func newProfilingHotspotsCmd() *cobra.Command {
 ` + profilingLeafTypeHelp + `
 
 Examples:
-  dtctl profiling hotspots PROCESS-ABC123          # rewritten to PGI
-  dtctl profiling hotspots PROCESS_GROUP-ABC123 --leaf-type service --limit 5
-  dtctl profiling hotspots PROCESS_GROUP_INSTANCE-ABC123 --app-only \
+  dtctl exec profiling hotspots PROCESS-ABC123          # rewritten to PGI
+  dtctl exec profiling hotspots PROCESS_GROUP-ABC123 --leaf-type service --limit 5
+  dtctl exec profiling hotspots PROCESS_GROUP_INSTANCE-ABC123 --app-only \
     --default-timeframe-start 'now()-1h'
   # an earlier 2h window
-  dtctl profiling hotspots PROCESS-ABC123 \
+  dtctl exec profiling hotspots PROCESS-ABC123 \
     --default-timeframe-start 'now()-21h' --default-timeframe-end 'now()-19h'`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -155,8 +152,8 @@ NOTE the memory tree is INVERTED vs hotspots: the allocation-site method is at
 the root and its callers hang below as children.
 
 Examples:
-  dtctl profiling memory PROCESS_GROUP-DEF456
-  dtctl profiling memory PROCESS_GROUP-DEF456 --survivors-only`,
+  dtctl exec profiling memory PROCESS_GROUP-DEF456
+  dtctl exec profiling memory PROCESS_GROUP-DEF456 --survivors-only`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProfiling(cmd, "memory", args[0], f)
@@ -172,7 +169,7 @@ func addProfilingCommonFlags(c *cobra.Command, f *profilingFlags) {
 	fl := c.Flags()
 	fl.StringVar(&f.start, "default-timeframe-start", "", "window start — ISO-8601/RFC3339, epoch millis, or now()-<dur> (default: now()-2h)")
 	fl.StringVar(&f.end, "default-timeframe-end", "", "window end — ISO-8601/RFC3339, epoch millis, or now() (default: now(); window max 2h)")
-	fl.IntVar(&f.limit, "limit", 100, "cap output to the top N stacks by running samples (0 = all)")
+	fl.IntVar(&f.limit, "limit", 100, "cap output to the top N stacks: hotspots by running samples, memory by allocated bytes (0 = all)")
 	fl.BoolVar(&f.appOnly, "app-only", false, "show only application frames (profiler-classified app code), stripping JRE/library and OneAgent noise")
 }
 
@@ -195,8 +192,8 @@ func runProfiling(cmd *cobra.Command, kind, entityID string, f *profilingFlags) 
 		return err
 	}
 
-	// Read-only, like query and logs: no safety gate.
-	_, c, err := setupClient(ctx)
+	// Code-level analysis only reads profiling data — gate on OperationRead.
+	_, c, err := setupWithSafety(ctx, safety.OperationRead)
 	if err != nil {
 		return err
 	}
@@ -227,7 +224,7 @@ func runProfiling(cmd *cobra.Command, kind, entityID string, f *profilingFlags) 
 	if err := json.Unmarshal(b, &result); err != nil {
 		return err
 	}
-	return renderProfiling(ctx, kind, apiKind, compactResult(result), f.limit, f.appOnly)
+	return renderProfiling(ctx, apiKind, compactResult(result), f.limit, f.appOnly)
 }
 
 // profilingAPIError adds profiling-specific advice to the API failures a
@@ -275,10 +272,10 @@ func profilingAPIError(err error) error {
 // agent envelope compose. Folded stacks are the default; a structured -o
 // (json/yaml/toon/…) or --jq prints the compacted result instead. In agent mode
 // the folded text is carried inside the envelope rather than written raw.
-func renderProfiling(ctx context.Context, kind, apiKind string, result interface{}, limit int, appOnly bool) error {
+func renderProfiling(ctx context.Context, apiKind string, result interface{}, limit int, appOnly bool) error {
 	printValue := func(v interface{}) error {
 		p := newPrinterCtx(ctx)
-		enrichAgent(p, "profiling", kind)
+		enrichAgent(p, "exec", "profiling")
 		return p.Print(v)
 	}
 	switch outputFormat(ctx) {

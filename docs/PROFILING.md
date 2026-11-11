@@ -1,17 +1,17 @@
-# Code-Level Profiling (`dtctl profiling`)
+# Code-Level Profiling (`dtctl exec profiling`)
 
 > **Experimental.** Both the underlying code-level-analysis API and these commands
 > may change in breaking ways between releases. Do not build automations directly
 > against the underlying endpoint — drive it through this command, which will be
 > re-pointed if the API changes.
 
-`dtctl profiling` runs a code-level profiling analysis on a monitored process
+`dtctl exec profiling` runs a code-level profiling analysis on a monitored process
 and returns **collapsed (folded) stacks** — the representation an agent (or a human)
 can read directly, rather than the API's UI render tree.
 
 ```
-dtctl profiling hotspots <entity> [flags]
-dtctl profiling memory   <entity> [flags]
+dtctl exec profiling hotspots <entity> [flags]
+dtctl exec profiling memory   <entity> [flags]
 ```
 
 ## Entities
@@ -72,20 +72,20 @@ com.example.ManufacturerController.issueCreditCard;...reserveSlot  running=2   l
 
 ```bash
 # CPU hotspots for a process, application frames only, last hour
-dtctl profiling hotspots PROCESS-ABC123 --app-only --default-timeframe-start 'now()-1h'
+dtctl exec profiling hotspots PROCESS-ABC123 --app-only --default-timeframe-start 'now()-1h'
 
 # An earlier 2h window (yesterday's incident)
-dtctl profiling hotspots PROCESS-ABC123 \
+dtctl exec profiling hotspots PROCESS-ABC123 \
   --default-timeframe-start 'now()-21h' --default-timeframe-end 'now()-19h'
 
 # Localize why a specific endpoint is hot
-dtctl profiling hotspots PROCESS_GROUP-ABC123 --leaf-type service --limit 5
+dtctl exec profiling hotspots PROCESS_GROUP-ABC123 --leaf-type service --limit 5
 
 # Memory allocation pressure, only survivors (the leak tell)
-dtctl profiling memory PROCESS_GROUP-DEF456 --survivors-only
+dtctl exec profiling memory PROCESS_GROUP-DEF456 --survivors-only
 
 # Raw result for scripting
-dtctl profiling hotspots PROCESS-ABC123 -o json --jq '.result.dataNodes | length'
+dtctl exec profiling hotspots PROCESS-ABC123 -o json --jq '.result.dataNodes | length'
 ```
 
 ## Auth

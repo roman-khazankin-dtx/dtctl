@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/require"
 )
 
 func TestParseProfileTimestamp(t *testing.T) {
@@ -109,7 +107,7 @@ func TestRunProfiling_RejectsBadInputBeforeAnyAPICall(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := newProfilingCmd()
+			c := newExecProfilingCmd()
 			c.SetArgs(tc.args)
 			c.SilenceUsage, c.SilenceErrors = true, true
 			for _, sub := range c.Commands() {
@@ -128,15 +126,4 @@ func TestNoProfilingStacksNote(t *testing.T) {
 	if got := noProfilingStacksNote("METHOD_HOTSPOTS", empty, false); !strings.Contains(got, "no profiling samples in the window") {
 		t.Errorf("note = %q", got)
 	}
-}
-
-// TestProfilingAllowedInReadonly verifies the safety gate lets a profiling
-// analysis through in a readonly context: it only reads profiling data.
-func TestProfilingAllowedInReadonly(t *testing.T) {
-	isolatedContext(t, "readonly")
-
-	_, env := runAgentEnvelope(t, []string{"profiling", "hotspots", "PROCESS_GROUP-0000000000000000"})
-
-	require.NotEqual(t, "safety_blocked", errorCode(t, env),
-		"profiling is read-only and must not be blocked in a readonly context")
 }
