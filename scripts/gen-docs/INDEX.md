@@ -47,6 +47,7 @@
 | environment-share |
 | export |
 | get-contexts |
+| hotspots |
 | import |
 | init |
 | install |
@@ -55,6 +56,7 @@
 | login |
 | logout |
 | lql-to-dql |
+| memory |
 | migrate-tokens |
 | openpipeline-dql-processor |
 | openpipeline-matcher |

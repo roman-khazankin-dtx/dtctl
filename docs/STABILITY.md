@@ -210,9 +210,9 @@ deprecation cycle. Nothing stated here is relaxed by reaching 1.0.
 
 ## Summary
 
-- commands: 269 stable, 19 experimental, 16 development
+- commands: 269 stable, 22 experimental, 16 development
 - global flags (accepted on every command): 11
-- entries below (commands + flags): 950
+- entries below (commands + flags): 964
 
 ## Surface
 
@@ -924,6 +924,20 @@ open intent                          stable
   --data-file                        stable
 plugin                               stable
 plugin list                          stable
+profiling                            experimental  since 0.46.0
+profiling hotspots                   experimental  since 0.46.0
+  --app-only                         experimental
+  --default-timeframe-end            experimental
+  --default-timeframe-start          experimental
+  --leaf-type                        experimental
+  --limit                            experimental
+  --show-waiting                     experimental
+profiling memory                     experimental  since 0.46.0
+  --app-only                         experimental
+  --default-timeframe-end            experimental
+  --default-timeframe-start          experimental
+  --limit                            experimental
+  --survivors-only                   experimental
 query                                stable
   --client-context                   stable
   --compact                          experimental  since 0.40.0  (declared)

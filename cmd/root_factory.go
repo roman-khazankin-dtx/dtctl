@@ -464,7 +464,7 @@ SLOs, queries, and other Dynatrace platform capabilities.`,
 		alias, apply, auth, claim, commands, newCompletionCmd(), cfg, create, ctx,
 		del, describe, newDiffCmd(), disable, newDoctorCmd(), download, edit,
 		enable, exec, find, get, history, newInspectCmd(), inventory, logs,
-		open, plugin, newQueryCmd(), restore, share, unshare, skills,
+		open, plugin, newProfilingCmd(), newQueryCmd(), restore, share, unshare, skills,
 		newTokenScopesHelpTopicCmd(), translate, update, verify,
 		newVersionCmd(), wait,
 	)

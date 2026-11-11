@@ -386,6 +386,8 @@ Generated reference of the API token scopes each resource requires, grouped by s
 | gcp | `extensions:configurations:read` |
 | gcp | `settings:objects:read` |
 | group | `iam:groups:read` |
+| hotspots | `storage:entities:read` |
+| hotspots | `storage:profiles:read` |
 | hub-extension | `hub:catalog:read` |
 | hub-extension-release | `hub:catalog:read` |
 | intent | `app-engine:apps:run` |
@@ -395,6 +397,8 @@ Generated reference of the API token scopes each resource requires, grouped by s
 | license-settings | or instead any one of: `app-engine:functions:run`; `platform-management:environments:read` |
 | lookup | `storage:files:read` |
 | lql-to-dql | `openpipeline:configurations:read` |
+| memory | `storage:entities:read` |
+| memory | `storage:profiles:read` |
 | notebook | `document:documents:read` |
 | notification | `notification:notifications:read` |
 | openpipeline-dql-processor | `openpipeline:configurations:read` |
