@@ -26,7 +26,7 @@ Available operations:
   slo                     Evaluate a service-level objective
   copilot (cp, chat)      Chat with Davis CoPilot interactively
   preview-processor       Preview an OpenPipeline processor against sample records
-  profiling               Run a code-level profiling analysis (hotspots, memory)`,
+  profiling               Run a code-level profiling analysis (hotspots, memory; experimental)`,
 		Example: `  # Execute a workflow and wait for completion
   dtctl exec workflow <workflow-id>
 

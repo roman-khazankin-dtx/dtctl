@@ -39,6 +39,11 @@ const profilingFindIDsQuery = `dtctl query 'smartscapeNodes PROCESS | fields id,
 const profilingFindIDsHint = profilingFindIDsQuery + `
   # id_classic is the PROCESS_GROUP_INSTANCE-xxx id; dt.process_group.id is the PROCESS_GROUP-xxx id`
 
+// profilingExperimentalNotice opens every profiling help page, so whoever
+// reads the help of any profiling command sees it before anything else.
+const profilingExperimentalNotice = `EXPERIMENTAL: both the underlying API and these commands may change in breaking
+ways between releases.`
+
 // execProfilingCmd is the namespace for code-level profiling analyses.
 var execProfilingCmd = newExecProfilingCmd()
 
@@ -52,8 +57,7 @@ func newExecProfilingCmd() *cobra.Command {
 		Short: "Run a code-level profiling analysis on a process",
 		Long: `Run a code-level profiling analysis via the Dynatrace code-level analysis API.
 
-EXPERIMENTAL: both the underlying API and these commands may change in breaking
-ways between releases.
+` + profilingExperimentalNotice + `
 
 The analysis is asynchronous server-side; the command polls until it completes.
 Output is collapsed (folded) stacks — one line per unique stack, carrying all
@@ -114,10 +118,10 @@ func newProfilingHotspotsCmd() *cobra.Command {
 		Use:   "hotspots <entity>",
 		Short: "Method CPU hotspots for a process group or instance",
 		Long: `Method CPU hotspots for a PROCESS_GROUP or PROCESS_GROUP_INSTANCE.
-` + profilingLeafTypeHelp + `
 
-Examples:
-  dtctl exec profiling hotspots PROCESS-ABC123          # rewritten to PGI
+` + profilingExperimentalNotice + `
+` + profilingLeafTypeHelp,
+		Example: `  dtctl exec profiling hotspots PROCESS-ABC123          # rewritten to PGI
   dtctl exec profiling hotspots PROCESS_GROUP-ABC123 --leaf-type service --limit 5
   dtctl exec profiling hotspots PROCESS_GROUP_INSTANCE-ABC123 --app-only \
     --default-timeframe-start 'now()-1h'
@@ -143,16 +147,16 @@ func newProfilingMemoryCmd() *cobra.Command {
 		Short: "Memory allocation analysis for a process group or instance",
 		Long: `Memory allocation analysis for a PROCESS_GROUP or PROCESS_GROUP_INSTANCE.
 
+` + profilingExperimentalNotice + `
+
 Shows where allocations happen and what survived GC within the window —
 allocation pressure, not live retained heap. It does not prove a leak or predict
 OOM; confirm that with a heap/RSS trend and pod restart/OOM state. The leak tell
 is survived/allocated: a frame whose survivors far exceed its in-window
 allocations is retaining, not churning (the biggest allocator is usually churn).
 NOTE the memory tree is INVERTED vs hotspots: the allocation-site method is at
-the root and its callers hang below as children.
-
-Examples:
-  dtctl exec profiling memory PROCESS_GROUP-DEF456
+the root and its callers hang below as children.`,
+		Example: `  dtctl exec profiling memory PROCESS_GROUP-DEF456
   dtctl exec profiling memory PROCESS_GROUP-DEF456 --survivors-only`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
