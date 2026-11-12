@@ -73,6 +73,14 @@ Kinds:
   hotspots  Method CPU hotspots (per-stack thread-state counts include lock/IO/wait)
   memory    Memory allocation analysis (allocation pressure, not live heap)
 
+Pick the flags by the question:
+  "which of OUR methods ..." (ignore JRE, library, agent code)  hotspots --app-only
+  "why is this endpoint / request slow"                         hotspots --leaf-type service
+  "what burns CPU outside requests" (GC, JIT, pools, timers)    hotspots --leaf-type background
+  "what are the threads doing", idle/parked/blocked threads     hotspots --show-waiting
+      (without --show-waiting only running samples count, so waiting threads are invisible)
+  "what is retained / leaking", not just allocated              memory --survivors-only
+
 Entities: pass a process id, PROCESS-xxx. SERVICE ids are not accepted. The API
 speaks the classic entity vocabulary, so dtctl rewrites PROCESS-xxx to its
 PROCESS_GROUP_INSTANCE-xxx form (same entity, same id suffix). Classic ids work
@@ -135,7 +143,7 @@ func newProfilingHotspotsCmd() *cobra.Command {
 	}
 	addProfilingCommonFlags(c, f)
 	c.Flags().StringVar(&f.leafType, "leaf-type", profile.LeafTypeTotal, "CPU sample scope: total, service, or background")
-	c.Flags().BoolVar(&f.showWaiting, "show-waiting", false, "include waiting (non-running) samples")
+	c.Flags().BoolVar(&f.showWaiting, "show-waiting", false, "also count waiting (parked, sleeping, blocked) samples; without it waiting threads are invisible")
 	stability.Mark(c, stability.Experimental, profilingSince)
 	return c
 }
