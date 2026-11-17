@@ -104,6 +104,13 @@ func TestRunProfiling_RejectsBadInputBeforeAnyAPICall(t *testing.T) {
 		{"service entity", []string{"hotspots", "SERVICE-0000000000000000"}, "invalid entity"},
 		{"bad leaf type", []string{"hotspots", "PROCESS_GROUP-0000000000000000", "--leaf-type", "nope"}, "invalid --leaf-type"},
 		{"window too wide", []string{"memory", "PROCESS_GROUP-0000000000000000", "--default-timeframe-start", "now()-3h"}, "must not exceed 2h"},
+		{"bad view", []string{"hotspots", "PROCESS-0000000000000000", "--view", "flame"}, "invalid --view"},
+		{"focus with functions view", []string{"hotspots", "PROCESS-0000000000000000", "--view", "functions", "--focus", "f"}, "drop --view functions"},
+		{"bad state", []string{"hotspots", "PROCESS-0000000000000000", "--view", "functions", "--state", "sleeping"}, "invalid --state"},
+		{"state on stack view", []string{"hotspots", "PROCESS-0000000000000000", "--state", "lock"}, "--state applies to --view functions and --focus"},
+		{"sort on stack view", []string{"hotspots", "PROCESS-0000000000000000", "--sort", "total"}, "--sort applies to --view functions"},
+		{"bad sort", []string{"hotspots", "PROCESS-0000000000000000", "--view", "functions", "--sort", "name"}, "invalid --sort"},
+		{"view on memory", []string{"memory", "PROCESS-0000000000000000", "--view", "functions"}, "unknown flag: --view"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

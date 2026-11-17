@@ -212,7 +212,7 @@ deprecation cycle. Nothing stated here is relaxed by reaching 1.0.
 
 - commands: 269 stable, 22 experimental, 16 development
 - global flags (accepted on every command): 11
-- entries below (commands + flags): 964
+- entries below (commands + flags): 968
 
 ## Surface
 
@@ -727,9 +727,13 @@ exec profiling hotspots              experimental  since 0.46.0
   --app-only                         experimental
   --default-timeframe-end            experimental
   --default-timeframe-start          experimental
+  --focus                            experimental
   --leaf-type                        experimental
   --limit                            experimental
   --show-waiting                     experimental
+  --sort                             experimental
+  --state                            experimental
+  --view                             experimental
 exec profiling memory                experimental  since 0.46.0
   --app-only                         experimental
   --default-timeframe-end            experimental

@@ -24,45 +24,9 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 	default:
 		return ""
 	}
-	envelope, ok := raw.(map[string]interface{})
-	if !ok {
+	nodeMap, rootID := hotspotTree(raw)
+	if nodeMap == nil {
 		return ""
-	}
-	result, _ := envelope["result"].(map[string]interface{})
-	nodes := dataNodes(result)
-	if len(nodes) == 0 {
-		return ""
-	}
-
-	rootID := nodeIDStr(result["dataRootNodeId"])
-
-	type node struct {
-		label    string
-		isApp    bool
-		samples  map[string]int
-		children []string
-	}
-
-	nodeMap := make(map[string]*node, len(nodes))
-	for _, n := range nodes {
-		nm, ok := n.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		id := nodeIDStr(nm["id"])
-		nd := &node{
-			label:   nodeLabel(nm),
-			isApp:   nodeIsApp(nm),
-			samples: nodeSamples(nm),
-		}
-		if cids, ok := nm["childIds"].([]interface{}); ok {
-			for _, c := range cids {
-				if s, ok := c.(string); ok {
-					nd.children = append(nd.children, s)
-				}
-			}
-		}
-		nodeMap[id] = nd
 	}
 
 	// Emit one folded line per unique stack. Two corrections over a naive
@@ -94,30 +58,6 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 	agg := make(map[string]map[string]int)
 	var order []string
 
-	// selfSamples derives a node's own (exclusive) per-state counts from the
-	// cumulative API counts: self = node − Σ children, clamped at zero per state.
-	selfSamples := func(n *node) map[string]int {
-		self := make(map[string]int, len(n.samples))
-		for k, v := range n.samples {
-			self[k] = v
-		}
-		for _, cid := range n.children {
-			c := nodeMap[cid]
-			if c == nil {
-				continue
-			}
-			for k, v := range c.samples {
-				self[k] -= v
-			}
-		}
-		for k, v := range self {
-			if v < 0 {
-				self[k] = 0
-			}
-		}
-		return self
-	}
-
 	var dfs func(id string, stack []string)
 	dfs = func(id string, stack []string) {
 		n := nodeMap[id]
@@ -130,7 +70,7 @@ func ToCollapsed(kind string, raw interface{}, top int, appOnly bool) string {
 			// backing array, or a later sibling's frame corrupts an earlier path.
 			path = append(append(make([]string, 0, len(stack)+1), stack...), n.label)
 		}
-		self := selfSamples(n)
+		self := n.self(nodeMap)
 		if len(path) > 0 && sampleTotal(self) > 0 {
 			key := strings.Join(path, ";")
 			m := agg[key]

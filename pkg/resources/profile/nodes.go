@@ -7,6 +7,76 @@ import (
 
 // Node accessors for the API's render tree, shared by the folded-stack renderers.
 
+// treeNode is one hotspots node: its frame label, whether --app-only keeps it,
+// its per-state sample counts (cumulative, as the API reports them) and its
+// children's ids.
+type treeNode struct {
+	label    string
+	isApp    bool
+	samples  map[string]int
+	children []string
+}
+
+// hotspotTree indexes a hotspots result's dataNodes by id and returns the root
+// id. It returns a nil map when the result holds no nodes.
+func hotspotTree(raw interface{}) (map[string]*treeNode, string) {
+	envelope, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, ""
+	}
+	result, _ := envelope["result"].(map[string]interface{})
+	nodes := dataNodes(result)
+	if len(nodes) == 0 {
+		return nil, ""
+	}
+	nodeMap := make(map[string]*treeNode, len(nodes))
+	for _, n := range nodes {
+		nm, ok := n.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		nd := &treeNode{
+			label:   nodeLabel(nm),
+			isApp:   nodeIsApp(nm),
+			samples: nodeSamples(nm),
+		}
+		if cids, ok := nm["childIds"].([]interface{}); ok {
+			for _, c := range cids {
+				if s, ok := c.(string); ok {
+					nd.children = append(nd.children, s)
+				}
+			}
+		}
+		nodeMap[nodeIDStr(nm["id"])] = nd
+	}
+	return nodeMap, nodeIDStr(result["dataRootNodeId"])
+}
+
+// self derives a node's own (exclusive) per-state counts from the cumulative API
+// counts: self = node − Σ children, clamped at zero per state to absorb sampling
+// jitter and synthetic roots whose own count is below their children's.
+func (n *treeNode) self(nodeMap map[string]*treeNode) map[string]int {
+	self := make(map[string]int, len(n.samples))
+	for k, v := range n.samples {
+		self[k] = v
+	}
+	for _, cid := range n.children {
+		c := nodeMap[cid]
+		if c == nil {
+			continue
+		}
+		for k, v := range c.samples {
+			self[k] -= v
+		}
+	}
+	for k, v := range self {
+		if v < 0 {
+			self[k] = 0
+		}
+	}
+	return self
+}
+
 func dataNodes(result map[string]interface{}) []interface{} {
 	if result == nil {
 		return nil

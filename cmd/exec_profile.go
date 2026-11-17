@@ -106,11 +106,41 @@ const profilingLeafTypeHelp = `
 type profilingFlags struct {
 	start, end    string
 	limit         int
+	limitSet      bool // --limit given explicitly; each view has its own default
 	appOnly       bool
 	leafType      string
 	showWaiting   bool
 	survivorsOnly bool
+	view          string // hotspots: stacks (default) or functions
+	focus         string // hotspots: the function whose callers and callees to show
+	state         string // hotspots functions/focus: which thread states to count
+	sortBy        string // hotspots functions: self or total
 }
+
+// Default row caps of the per-function views when --limit is not given: the
+// functions table is read top-down and its tail is noise, and the focus view
+// caps its callers and its callees separately.
+const (
+	profilingFunctionsDefaultLimit = 30
+	profilingFocusDefaultLimit     = 10
+)
+
+const profilingViewsHelp = `
+Views. The default prints one row per unique call stack. A function reached
+through many paths is then split over many rows, so it can be among the hottest
+without any single row showing it. Two views sum the stacks per function:
+  --view functions   one row per function: SELF (samples with the function
+                     running, i.e. on top of the stack), TOTAL (samples with it
+                     anywhere on the stack), their shares of all samples, and
+                     PATHS (how many distinct call paths reach it). Sorted by
+                     self; --sort total ranks by total. Default --limit 30.
+  --focus <function> one function's callers and callees, each with its share of
+                     the function's total time, plus the time on the function
+                     itself. Takes an exact frame as printed, or a substring of
+                     exactly one. Default --limit 10 callers and 10 callees.
+Both count running (CPU) samples; --state lock, net_io, disk_io, wait, offcpu
+(the four non-running states) or all counts others instead. With -o json/csv/
+yaml they print their rows; recursion counts once per stack.`
 
 func newProfilingHotspotsCmd() *cobra.Command {
 	f := &profilingFlags{}
@@ -120,22 +150,34 @@ func newProfilingHotspotsCmd() *cobra.Command {
 		Long: `Method CPU hotspots for a process (PROCESS-xxx).
 
 ` + profilingExperimentalNotice + `
-` + profilingLeafTypeHelp,
+` + profilingLeafTypeHelp + `
+` + profilingViewsHelp,
 		Example: `  dtctl exec profiling hotspots PROCESS-ABC123
   dtctl exec profiling hotspots PROCESS-ABC123 --leaf-type service --limit 5
   dtctl exec profiling hotspots PROCESS-ABC123 --app-only \
     --default-timeframe-start 'now()-1h'
   # an earlier 2h window
   dtctl exec profiling hotspots PROCESS-ABC123 \
-    --default-timeframe-start 'now()-21h' --default-timeframe-end 'now()-19h'`,
+    --default-timeframe-start 'now()-21h' --default-timeframe-end 'now()-19h'
+  # which functions use the most CPU, summed over every stack
+  dtctl exec profiling hotspots PROCESS-ABC123 --view functions
+  # who calls a hot function, and where its time goes
+  dtctl exec profiling hotspots PROCESS-ABC123 --focus OrderService.load
+  # which functions wait on locks
+  dtctl exec profiling hotspots PROCESS-ABC123 --view functions --state lock`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			f.limitSet = cmd.Flags().Changed("limit")
 			return runProfiling(cmd, "hotspots", args[0], f)
 		},
 	}
 	addProfilingCommonFlags(c, f)
 	c.Flags().StringVar(&f.leafType, "leaf-type", profile.LeafTypeTotal, "CPU sample scope: total, service, or background")
 	c.Flags().BoolVar(&f.showWaiting, "show-waiting", false, "include waiting (non-running) samples")
+	c.Flags().StringVar(&f.view, "view", "stacks", "stacks (one row per call stack) or functions (one row per function, self and total)")
+	c.Flags().StringVar(&f.focus, "focus", "", "show this function's callers and callees (an exact frame, or a substring of exactly one)")
+	c.Flags().StringVar(&f.state, "state", "running", "thread states --view functions/--focus count: running, lock, net_io, disk_io, wait, offcpu, or all")
+	c.Flags().StringVar(&f.sortBy, "sort", "self", "--view functions order: self or total")
 	stability.Mark(c, stability.Experimental, profilingSince)
 	return c
 }
@@ -191,6 +233,9 @@ func runProfiling(cmd *cobra.Command, kind, entityID string, f *profilingFlags) 
 	default:
 		return fmt.Errorf("invalid --leaf-type %q: use total, service, or background", f.leafType)
 	}
+	if err := validateProfilingView(f); err != nil {
+		return err
+	}
 	from, to, err := resolveProfilingTimeframe(f.start, f.end)
 	if err != nil {
 		return err
@@ -228,7 +273,150 @@ func runProfiling(cmd *cobra.Command, kind, entityID string, f *profilingFlags) 
 	if err := json.Unmarshal(b, &result); err != nil {
 		return err
 	}
-	return renderProfiling(ctx, apiKind, compactResult(result), f.limit, f.appOnly)
+	result = compactResult(result)
+	if f.focus != "" {
+		return renderProfilingFocus(ctx, result, f)
+	}
+	if f.view == "functions" {
+		return renderProfilingFunctions(ctx, result, f)
+	}
+	return renderProfiling(ctx, apiKind, result, f.limit, f.appOnly)
+}
+
+// validateProfilingView checks the hotspots view flags. A flag that only one
+// view reads is refused with the others, rather than silently ignored. Flags a
+// kind does not register stay at their zero value and pass.
+func validateProfilingView(f *profilingFlags) error {
+	switch f.view {
+	case "", "stacks", "functions":
+	default:
+		return fmt.Errorf("invalid --view %q: use stacks or functions", f.view)
+	}
+	if f.focus != "" && f.view == "functions" {
+		return fmt.Errorf("--focus prints its own view (callers and callees); drop --view functions")
+	}
+	perFunction := f.focus != "" || f.view == "functions"
+	if f.state != "" && !profile.ValidState(f.state) {
+		return fmt.Errorf("invalid --state %q: use %s", f.state, strings.Join(profile.States, ", "))
+	}
+	if f.state != "" && f.state != "running" && !perFunction {
+		return fmt.Errorf("--state applies to --view functions and --focus; the stack view always carries all five thread-state counts")
+	}
+	switch f.sortBy {
+	case "", "self":
+	case "total":
+		if f.view != "functions" {
+			return fmt.Errorf("--sort applies to --view functions")
+		}
+	default:
+		return fmt.Errorf("invalid --sort %q: use self or total", f.sortBy)
+	}
+	return nil
+}
+
+// renderProfilingFunctions prints the functions view: rows through the standard
+// printer, so a table, -o json/csv/yaml, --jq and the agent envelope all work.
+func renderProfilingFunctions(ctx context.Context, result interface{}, f *profilingFlags) error {
+	t := profile.HotspotFunctions(result, f.appOnly, f.state, f.sortBy)
+	if t == nil {
+		return printProfilingNote(ctx, noProfilingFunctionsNote(result, f))
+	}
+	limit := f.limit
+	if !f.limitSet {
+		limit = profilingFunctionsDefaultLimit
+	}
+	rows := t.Rows
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	sortKey := f.sortBy
+	if sortKey == "" {
+		sortKey = "self"
+	}
+	note := fmt.Sprintf("%d of %d functions, by %s %s samples (%d %s samples in the window)",
+		len(rows), len(t.Rows), sortKey, f.state, t.Samples, f.state)
+	var hints []string
+	if len(rows) < len(t.Rows) {
+		hints = append(hints, "--limit 0 lists every function")
+	}
+	if len(rows) > 0 {
+		hints = append(hints, fmt.Sprintf("--focus '%s' shows its callers and callees", rows[0].Function))
+	}
+	return printProfilingRows(ctx, rows, len(t.Rows), note, hints)
+}
+
+// renderProfilingFocus prints one function's callers and callees.
+func renderProfilingFocus(ctx context.Context, result interface{}, f *profilingFlags) error {
+	limit := f.limit
+	if !f.limitSet {
+		limit = profilingFocusDefaultLimit
+	}
+	rows, fn, nCallers, nCallees, err := profile.HotspotFocus(result, f.appOnly, f.state, f.focus, limit)
+	if err != nil {
+		if profile.HotspotFunctions(result, f.appOnly, f.state, "self") == nil {
+			return printProfilingNote(ctx, noProfilingFunctionsNote(result, f))
+		}
+		return err
+	}
+	note := fmt.Sprintf("%s: %d callers, %d callees, shares of its total %s samples", fn, nCallers, nCallees, f.state)
+	var hints []string
+	if limit > 0 && (nCallers > limit || nCallees > limit) {
+		hints = append(hints, fmt.Sprintf("showing up to %d callers and %d callees; --limit 0 lists them all", limit, limit))
+	}
+	hints = append(hints, "--focus <caller or callee> walks the call graph further")
+	return printProfilingRows(ctx, rows, len(rows), note, hints)
+}
+
+// printProfilingRows prints a per-function view's rows. A table gets the note
+// and hints as trailing # lines; the agent envelope carries them as
+// suggestions; structured formats get the rows alone.
+func printProfilingRows(ctx context.Context, rows interface{}, total int, note string, hints []string) error {
+	p := newPrinterCtx(ctx)
+	if ap := enrichAgent(p, "exec", "profiling"); ap != nil {
+		ap.SetTotal(total)
+		ap.SetSuggestions(append([]string{note}, hints...))
+	}
+	if err := p.PrintList(rows); err != nil {
+		return err
+	}
+	if agentMode(ctx) || jqFilter(ctx) != "" {
+		return nil
+	}
+	switch outputFormat(ctx) {
+	case "", "table", "wide":
+		w := currentStdout(ctx)
+		fmt.Fprintf(w, "# %s\n", note)
+		for _, h := range hints {
+			fmt.Fprintf(w, "# %s\n", h)
+		}
+	}
+	return nil
+}
+
+// printProfilingNote prints a one-line explanation in place of a view's output,
+// inside the envelope in agent mode.
+func printProfilingNote(ctx context.Context, note string) error {
+	if agentMode(ctx) {
+		p := newPrinterCtx(ctx)
+		enrichAgent(p, "exec", "profiling")
+		return p.Print(note)
+	}
+	_, err := fmt.Fprintln(currentStdout(ctx), note)
+	return err
+}
+
+// noProfilingFunctionsNote explains an empty per-function view. Running samples
+// absent means what an empty stack view means; another --state may simply have
+// none in the window.
+func noProfilingFunctionsNote(result interface{}, f *profilingFlags) string {
+	if f.state == "" || f.state == "running" {
+		return noProfilingStacksNote("methodHotspots", result, f.appOnly)
+	}
+	entity := ""
+	if m, ok := result.(map[string]interface{}); ok {
+		entity, _ = m["entityId"].(string)
+	}
+	return fmt.Sprintf("# no %s samples for %s in the window — the stack view (without --view/--focus) shows every thread state; waiting states may need --show-waiting", f.state, entity)
 }
 
 // profilingAPIError adds profiling-specific advice to the API failures a
@@ -279,7 +467,11 @@ func profilingAPIError(err error) error {
 func renderProfiling(ctx context.Context, apiKind string, result interface{}, limit int, appOnly bool) error {
 	printValue := func(v interface{}) error {
 		p := newPrinterCtx(ctx)
-		enrichAgent(p, "exec", "profiling")
+		if ap := enrichAgent(p, "exec", "profiling"); ap != nil && apiKind == profile.Kind["hotspots"] {
+			if _, folded := v.(string); folded {
+				ap.SetSuggestions([]string{"one row per call stack: to rank functions, summed over every stack they appear in, use --view functions; for one function's callers, --focus <function>"})
+			}
+		}
 		return p.Print(v)
 	}
 	switch outputFormat(ctx) {
