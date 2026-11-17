@@ -319,6 +319,7 @@ dtctl runs one small, bounded probe before it suggests widening the time window:
 |---|---|---|
 | `fetch <object> \| filter …` / `summarize … by:` | the query's own `fetch` stage with `\| limit 100`, and the field names in its `filter`/`filterOut` stages and `by:` clause compared against the sampled records | `field_not_in_sample` |
 | `timeseries …` | the metric keys that reported series in the query window (at most its last 2h), listed with the `metrics` command | `metric_not_in_window` |
+| `smartscapeNodes`/`smartscapeEdges` with `id`, `source_id` or `target_id` compared to a string literal (`== "SERVICE-…"`, `in(id, {…})`) | none: decided from the query text. These fields are typed smartscape ids, so a raw string matches no row in any window; the suggestion wraps the literal in `toSmartscapeId(…)` and replaces the widen-the-window advice | `raw_smartscape_id` |
 
 The probes are capped (1 GB scan, 10 s read time, bounded result size), run only
 on an empty result that no scan, time, result or consumption limit cut short,

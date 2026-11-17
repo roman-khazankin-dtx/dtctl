@@ -74,6 +74,11 @@ func (e *DQLExecutor) emptyResultAdvice(query string, result *DQLQueryResponse, 
 	if !isEmptyResult(records) {
 		return nil, nil
 	}
+	// A raw id literal on a smartscape query is decided from the query text
+	// alone, so it needs no probe.
+	if reason, suggestions := rawSmartscapeIDAdvice(query); reason != nil {
+		return reason, suggestions
+	}
 	var reason *output.EmptyReason
 	var suggestions []string
 	if probe := e.probeRunner(); probe != nil && (result == nil || !probeIsPartial(result)) {

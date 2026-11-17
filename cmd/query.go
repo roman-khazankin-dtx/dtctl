@@ -510,9 +510,14 @@ Examples:
 				MaxOutputBytes:               bounds.MaxOutputBytes,
 				TenantID:                     spillTenantID,
 				ContextName:                  spillContextName,
-				Decorate: func(ctx *output.ResponseContext, result *exec.DQLQueryResponse, _ []map[string]interface{}) {
+				Decorate: func(ctx *output.ResponseContext, result *exec.DQLQueryResponse, records []map[string]interface{}) {
 					named := defaultTimeframeStart != "" || defaultTimeframeEnd != "" || queryNamesWindow(query)
 					ctx.Window = queryWindowContext(result, named)
+					// An empty result from a raw smartscape id is not the window's
+					// doing, so the note does not tell the caller to widen it.
+					if ctx.Window != nil && ctx.Window.Note != "" && exec.EmptyFromRawSmartscapeID(query, records) {
+						ctx.Window.Note = "the query names no window, so it read the default last " + ctx.Window.Span + "; the empty result is the raw id, not the window (see suggestions)"
+					}
 				},
 				// The progress bar is a user-facing affordance of the `query`
 				// command only; opt in here (subject to --no-progress) so internal
