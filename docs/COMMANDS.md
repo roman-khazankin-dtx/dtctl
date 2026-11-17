@@ -286,7 +286,7 @@ Subcommands:
 
 ## exec
 
-Execute queries, workflows, or functions
+Execute workflows, functions, analyzers, SLOs, and code-level profiling
 
 _mutating | access: run | safety: OperationCreate_
 

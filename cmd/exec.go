@@ -12,10 +12,12 @@ var execCmd = newExecCmd()
 func newExecCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "exec",
-		Short: "Execute queries, workflows, or functions",
+		Short: "Execute workflows, functions, analyzers, SLOs, and code-level profiling",
 		Long: `Execute operations on the Dynatrace platform: run workflows, invoke
-serverless functions, evaluate SLOs, chat with Davis CoPilot, or preview
-OpenPipeline processor definitions against sample records.
+serverless functions, evaluate SLOs, chat with Davis CoPilot, preview
+OpenPipeline processor definitions against sample records, or profile a
+process at code level (which methods burn CPU, wait on locks or I/O, or
+allocate memory).
 
 For DQL queries, use 'dtctl query' instead (exec dql is deprecated).
 
