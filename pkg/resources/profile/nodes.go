@@ -1,6 +1,9 @@
 package profile
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Node accessors for the API's render tree, shared by the folded-stack renderers.
 
@@ -12,35 +15,102 @@ func dataNodes(result map[string]interface{}) []interface{} {
 	return nodes
 }
 
-// nodeIsApp reports whether the profiler classified this frame as the application's
-// own code. The API flag is counterintuitively named: apiInfo.systemApi == true means
-// application code; false means built-in/library frames (JRE, Spring, Apache) AND the
-// Dynatrace OneAgent itself (com.dynatrace.agent.*) — exactly the noise --app-only drops.
+// nodeIsApp reports whether a frame is the application's own code, the frames
+// --app-only keeps.
 //
-// Caveat: the classification is the API's, and it is not uniform across languages.
-// On .NET the OneAgent's own frames (Dynatrace.OneAgent.*) are flagged systemApi==true,
-// so --app-only keeps them; on Java the agent frames are correctly excluded. We take
-// the flag as-is rather than second-guessing it per language.
+// The API's flag is apiInfo.systemApi, and it is not an "is app code" flag: it is
+// true for every frame no built-in library rule claims, i.e. the language's default
+// rule ("Java", "Node.js"). On Java that is app code plus whatever has no rule of its
+// own, the OneAgent's com.dynatrace.agent.* frames included (the built-in JRE,
+// Spring and Apache rules are false). On Node.js every frame is true: the runtime
+// (node:internal/...) falls under the "Node.js" default rule, and npm packages get a
+// file-path rule per package that is also true. So the flag is the base, and three
+// kinds of frames it lets through are dropped here:
+//   - the OneAgent's own frames, on any runtime (see isAgentFrame);
+//   - npm packages: rule ids FilePathBasedApiRuleId-<package> (from node_modules);
+//   - the Node.js runtime: files under node: (node:internal/..., node:fs).
 func nodeIsApp(n map[string]interface{}) bool {
 	ai, _ := n["apiInfo"].(map[string]interface{})
 	if ai == nil {
 		return false
 	}
-	b, _ := ai["systemApi"].(bool)
-	return b
+	if b, _ := ai["systemApi"].(bool); !b {
+		return false
+	}
+	if isAgentFrame(n) {
+		return false
+	}
+	if id, _ := ai["id"].(string); strings.HasPrefix(id, "FilePathBasedApiRuleId-") {
+		return false
+	}
+	return !strings.HasPrefix(nodeFile(n), "node:")
 }
 
+// agentFramePrefixes are the namespaces of the OneAgent's own code: its Java agent
+// (com.dynatrace.agent.introspection, ...shaded.uem...) and its .NET agent.
+var agentFramePrefixes = []string{"com.dynatrace.agent.", "Dynatrace.OneAgent."}
+
+// isAgentFrame reports whether a frame is the OneAgent's own code. Matched on the
+// class path with a trailing dot, so an application that lives under com.dynatrace
+// (com.dynatrace.easytrade...) is not caught. The Java agent also injects bridge
+// classes into the instrumented library's own package
+// (jakarta.servlet.http.DynatraceJakartaUemIntrospection), caught by class name.
+// Memory-tree nodes carry only a dotted name, which is matched the same way.
+func isAgentFrame(n map[string]interface{}) bool {
+	cp, _ := n["classPath"].(string)
+	if cp == "" {
+		cp, _ = n["name"].(string)
+	}
+	cp += "."
+	for _, p := range agentFramePrefixes {
+		if strings.HasPrefix(cp, p) {
+			return true
+		}
+	}
+	cn, _ := n["className"].(string)
+	return strings.HasPrefix(cn, "Dynatrace") && strings.Contains(cn, "Introspection")
+}
+
+// nodeLabel names a frame: classPath.className.methodName for class-based runtimes
+// (Java, .NET, Go). Node.js frames have no class: they carry the function name plus
+// fileName/filePath, so they read file:function (see nodeFile). A frame with no
+// method name has no label.
 func nodeLabel(n map[string]interface{}) string {
 	cp, _ := n["classPath"].(string)
 	cn, _ := n["className"].(string)
 	mn, _ := n["methodName"].(string)
-	if cn == "" || mn == "" {
+	if mn == "" {
 		return ""
+	}
+	if cn == "" {
+		if f := nodeFile(n); f != "" {
+			return f + ":" + mn
+		}
+		return mn
 	}
 	if cp != "" {
 		return cp + "." + cn + "." + mn
 	}
 	return cn + "." + mn
+}
+
+// nodeFile is a class-less frame's file: filePath/fileName, with everything up to
+// the last node_modules/ cut, so a package frame reads graphql/type/definition.js
+// and not /app/node_modules/graphql/type/definition.js. Runtime files keep their
+// node: prefix (node:internal/timers, node:fs). Empty for frames with no file.
+func nodeFile(n map[string]interface{}) string {
+	fp, _ := n["filePath"].(string)
+	fn, _ := n["fileName"].(string)
+	f := fn
+	if fp != "" && fn != "" {
+		f = strings.TrimSuffix(fp, "/") + "/" + fn
+	} else if fp != "" {
+		f = fp
+	}
+	if i := strings.LastIndex(f, "node_modules/"); i >= 0 {
+		f = f[i+len("node_modules/"):]
+	}
+	return f
 }
 
 func nodeSamples(n map[string]interface{}) map[string]int {

@@ -190,3 +190,98 @@ func TestToCollapsed_TopCapsRowsNoSections(t *testing.T) {
 		t.Fatalf("rows not sorted by RUNNING desc:\n%s", out)
 	}
 }
+
+// jsnode builds a Node.js frame the way the API returns it: no class, the function
+// in methodName, and the file in fileName/filePath (recorded shape, gmg80500).
+func jsnode(id, method, filePath, fileName, ruleID string, running int, children ...string) map[string]interface{} {
+	kids := make([]interface{}, len(children))
+	for i, c := range children {
+		kids[i] = c
+	}
+	return map[string]interface{}{
+		"id":         id,
+		"classPath":  "",
+		"className":  "",
+		"methodName": method,
+		"fileName":   fileName,
+		"filePath":   filePath,
+		"apiInfo":    map[string]interface{}{"id": ruleID, "systemApi": true},
+		"samples":    map[string]interface{}{"RUNNING": float64(running)},
+		"childIds":   kids,
+	}
+}
+
+// Node.js frames have an empty className. The renderer used to label them "" and
+// skip them, so a Node.js profile printed "no stacks" while -o json had thousands
+// of nodes. They must render as file:function.
+func TestToCollapsed_NodeJSFramesRender(t *testing.T) {
+	raw := envelope("0",
+		hnode("0", "", "", false, 0, 0, "1"),
+		jsnode("1", "onconnection", "", "node:net", "default-rule-id-nodejs", 10, "2"),
+		jsnode("2", "Socket", "", "node:net", "default-rule-id-nodejs", 10),
+	)
+	out := ToCollapsed("methodHotspots", raw, 0, false)
+	want := "node:net:onconnection;node:net:Socket running=10 lock=0 net_io=0 disk_io=0 wait=0\n"
+	if out != want {
+		t.Fatalf("got %q, want %q", out, want)
+	}
+}
+
+func TestNodeLabel_NodeJSFiles(t *testing.T) {
+	cases := []struct{ path, file, want string }{
+		{"node:internal/timers", "", "node:internal/timers:f"},
+		{"node:internal/modules/cjs", "loader", "node:internal/modules/cjs/loader:f"},
+		{"", "node:fs", "node:fs:f"},
+		{"/app/node_modules/graphql/type", "definition.js", "graphql/type/definition.js:f"},
+		{"/app/node_modules/@grpc/proto-loader/node_modules/protobufjs/src", "type.js", "protobufjs/src/type.js:f"},
+		{"/app/build", "server.js", "/app/build/server.js:f"},
+		{"", "", "f"},
+	}
+	for _, c := range cases {
+		if got := nodeLabel(jsnode("x", "f", c.path, c.file, "", 0)); got != c.want {
+			t.Errorf("path=%q file=%q: got %q, want %q", c.path, c.file, got, c.want)
+		}
+	}
+}
+
+// --app-only promises to strip OneAgent noise, but the API marks the agent's Java
+// frames as the "Java" default rule (systemApi=true), like app code. On
+// featureflagservice 18 of 26 app-only stacks had com.dynatrace.agent frames.
+func TestToCollapsed_AppOnlyDropsAgentFrames(t *testing.T) {
+	agent := func(id, cp, cls string, running int, children ...string) map[string]interface{} {
+		n := hnode(id, cls, "m", true, running, 0, children...)
+		n["classPath"] = cp
+		return n
+	}
+	raw := envelope("0",
+		hnode("0", "", "", false, 0, 0, "A"),
+		agent("A", "com.dynatrace.easytrade.flags", "FlagController", 10, "B", "C"),
+		agent("B", "com.dynatrace.agent.shaded.uem.impl", "AgentInjectingResponseWrapper", 4),
+		agent("C", "jakarta.servlet.http", "DynatraceJakartaUemIntrospection", 3),
+	)
+	out := ToCollapsed("methodHotspots", raw, 0, true)
+	if strings.Contains(out, "agent") || strings.Contains(out, "Introspection") {
+		t.Fatalf("--app-only kept OneAgent frames:\n%s", out)
+	}
+	// The app frame stays, and the agent frames' samples fold into it.
+	want := "com.dynatrace.easytrade.flags.FlagController.m running=10 lock=0 net_io=0 disk_io=0 wait=0\n"
+	if out != want {
+		t.Fatalf("got %q, want %q", out, want)
+	}
+}
+
+// On Node.js every frame is systemApi=true, so --app-only used to keep the
+// runtime and every npm package. It keeps only the app's own files now.
+func TestToCollapsed_AppOnlyNodeJSKeepsOwnFiles(t *testing.T) {
+	raw := envelope("0",
+		hnode("0", "", "", false, 0, 0, "1"),
+		jsnode("1", "processTicksAndRejections", "node:internal/process", "task_queues", "default-rule-id-nodejs", 10, "2"),
+		jsnode("2", "handler", "/app/build", "server.js", "default-rule-id-nodejs", 10, "3"),
+		jsnode("3", "execute", "/app/node_modules/graphql/execution", "execute.js", "FilePathBasedApiRuleId-graphql", 6),
+	)
+	out := ToCollapsed("methodHotspots", raw, 0, true)
+	want := "/app/build/server.js:handler running=10 lock=0 net_io=0 disk_io=0 wait=0\n"
+	if out != want {
+		t.Fatalf("got %q, want %q", out, want)
+	}
+}

@@ -127,3 +127,26 @@ func TestNoProfilingStacksNote(t *testing.T) {
 		t.Errorf("note = %q", got)
 	}
 }
+
+// Node.js frames carry their file in fileName/filePath (className is empty), so
+// compactResult must keep those when set; it drops them only when empty (Java).
+func TestCompactResult_KeepsFileOnlyWhenSet(t *testing.T) {
+	in := map[string]interface{}{"dataNodes": []interface{}{
+		map[string]interface{}{"methodName": "Socket", "fileName": "node:net", "filePath": "", "color": "#fff"},
+		map[string]interface{}{"methodName": "run", "fileName": nil, "filePath": nil},
+	}}
+	nodes := compactResult(in).(map[string]interface{})["dataNodes"].([]interface{})
+	js, java := nodes[0].(map[string]interface{}), nodes[1].(map[string]interface{})
+	if js["fileName"] != "node:net" {
+		t.Errorf("Node.js fileName dropped: %v", js)
+	}
+	if _, ok := js["filePath"]; ok {
+		t.Errorf("empty filePath kept: %v", js)
+	}
+	if _, ok := js["color"]; ok {
+		t.Errorf("visual-only key kept: %v", js)
+	}
+	if _, ok := java["fileName"]; ok {
+		t.Errorf("null fileName kept: %v", java)
+	}
+}

@@ -46,6 +46,9 @@ com.example.ManufacturerController.issueCreditCard;...reserveSlot  running=2   l
 - Each frame's own (**self**) samples are attributed to its stack (`self = node −
   Σ children`, since the API's counts are cumulative), so the counts reconcile with
   the analysis totals — not just the leaves.
+- Frames read `package.Class.method`. Node.js frames have no class, so they read
+  `file:function`, e.g. `node:internal/timers:listOnTimeout` or
+  `graphql/execution/execute.js:executeField` (path cut after `node_modules/`).
 - This is deliberately **not** single-metric folded, so it does not feed
   `flamegraph.pl`/`speedscope` directly; the multi-counter line keeps lock/IO/wait
   visible, which is what makes off-CPU and lock-contention cases diagnosable.
@@ -61,7 +64,7 @@ com.example.ManufacturerController.issueCreditCard;...reserveSlot  running=2   l
 | Flag | Kinds | Meaning |
 |------|-------|---------|
 | `--default-timeframe-start` / `--default-timeframe-end` | all | Window — ISO-8601/RFC3339, epoch millis, or `now()`-relative (e.g. `now()-6h`). Defaults to the last 2h. The window is at most 2h long but can lie anywhere in the past; a start in the future is rejected. |
-| `--app-only` | all | Show only application frames (profiler `apiInfo.systemApi`), stripping JRE/library/agent noise. *Note: the profiler's classification is not uniform across languages — on .NET some OneAgent frames are flagged as application code.* |
+| `--app-only` | all | Show only application frames, stripping runtime, library and OneAgent frames. The base is the profiler's `apiInfo.systemApi` (JRE, Spring, Apache are off). dtctl also drops the OneAgent's own frames (`com.dynatrace.agent.*`, `Dynatrace.OneAgent.*`), which the profiler counts as app code. On Node.js it drops npm packages and the `node:` runtime. |
 | `--limit N` | all | Cap output to the top N stacks by running samples (`0` = all). |
 | `--leaf-type total\|service\|background` | hotspots | Which CPU samples to attribute. `service` = inside a traced request context (reach for this to localize an endpoint); `background` = ambient (GC, JIT, pools); `total` = everything (default). |
 | `--show-waiting` | hotspots | Include waiting (non-running) samples. |

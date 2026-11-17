@@ -174,7 +174,7 @@ func addProfilingCommonFlags(c *cobra.Command, f *profilingFlags) {
 	fl.StringVar(&f.start, "default-timeframe-start", "", "window start — ISO-8601/RFC3339, epoch millis, or now()-<dur> (default: now()-2h)")
 	fl.StringVar(&f.end, "default-timeframe-end", "", "window end — ISO-8601/RFC3339, epoch millis, or now() (default: now(); window max 2h)")
 	fl.IntVar(&f.limit, "limit", 100, "cap output to the top N stacks: hotspots by running samples, memory by allocated bytes (0 = all)")
-	fl.BoolVar(&f.appOnly, "app-only", false, "show only application frames (profiler-classified app code), stripping JRE/library and OneAgent noise")
+	fl.BoolVar(&f.appOnly, "app-only", false, "show only application frames, stripping runtime/library frames (JRE, Spring, npm packages, node:) and OneAgent frames")
 }
 
 // runProfiling validates the input, runs one analysis and prints it. Every
@@ -440,10 +440,16 @@ func startSpinner(ctx context.Context, label string) func() {
 
 // visualOnlyKeys are fields that carry UI rendering metadata with no analytical value.
 var visualOnlyKeys = map[string]bool{
-	"color":    true, // hex colour for charts
-	"uuid":     true, // internal render ID
-	"fileName": true, // usually null in profiling results
-	"filePath": true, // usually null in profiling results
+	"color": true, // hex colour for charts
+	"uuid":  true, // internal render ID
+}
+
+// emptyOnlyKeys are dropped only when they carry nothing. fileName/filePath are
+// null on Java frames, but on Node.js they are the only place a frame's file
+// lives (its className is empty), and the folded renderer labels frames from them.
+var emptyOnlyKeys = map[string]bool{
+	"fileName": true,
+	"filePath": true,
 }
 
 // compactResult strips timeseries dataPoints and visual-only fields so agents
@@ -454,6 +460,9 @@ func compactResult(v interface{}) interface{} {
 		out := make(map[string]interface{}, len(val))
 		for k, child := range val {
 			if visualOnlyKeys[k] {
+				continue
+			}
+			if emptyOnlyKeys[k] && (child == nil || child == "") {
 				continue
 			}
 			if k == "dataPoints" {
