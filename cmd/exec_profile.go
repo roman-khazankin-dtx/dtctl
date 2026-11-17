@@ -69,6 +69,13 @@ Each frame's own (self) samples are attributed to its stack, so the counts
 reconcile with the analysis totals. --limit caps the number of rows; it never
 changes the shape. Pass -o json for the compacted structured result.
 
+Which function uses the most CPU? A function reached through many call paths is
+split over many stack rows, so don't sum rows yourself; hotspots does it:
+  hotspots <entity> --view functions   one row per function: self and total
+                                       samples summed over every stack
+  hotspots <entity> --focus <function> that function's callers and callees
+(--state lock|offcpu|... counts other thread states; see hotspots --help.)
+
 Kinds:
   hotspots  Method CPU hotspots (per-stack thread-state counts include lock/IO/wait)
   memory    Memory allocation analysis (allocation pressure, not live heap)
